@@ -2,7 +2,7 @@ name: my-python-packages
 channels:
   - conda-forge
 dependencies:
-  - python=3.9  # or your preferred Python version
+  - python=3.9
   - numpy
   - pandas
   - matplotlib
