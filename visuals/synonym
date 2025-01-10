@@ -1,0 +1,280 @@
+# Global synonyms dictionary to group words together
+synonyms_dict = {
+    "money": ["money", "income", "paid", "pay", "payment", "income", "salary", "salaries", "wage", "wages", "paycheck",
+              "paychecks",
+              "argent", "salaire", "paye", "paie", "revenu", "revenus", "gagne", "gagner", "rémunération", "profit",
+              "profits",
+              "earning", "earnings", "compensation", "compensated", "remuneration", "finance", "financial",
+              "financially", "savings", "pays", "cheque",
+              "currency", "cash", "funded", "funding", "stipend", "monetary", "paying"],
+
+    "boss": ["supervisor", "manager", "lead", "boss", "patron", "chef", "supérieur", "superviseur", "gestionnaire",
+             "directeur",
+             "employeur", "employer", "leadership", "superior", "management", "supervise", "supervised", "managing",
+             "managed",
+             "superintendent", "overseer", "administrator", "executive"],
+
+    "novelty": ["novelty", "novel", "new", "newness", "fresh", "freshness", "innovation", "innovative",
+               "innovating", "innovate", "innovated", "different", "difference", "variety", "varied",
+               "varying", "diverse", "diversity", "change", "changing", "changed", "unique", "uniqueness",
+               "original", "originality", "creative", "creativity", "create", "creating", "created",
+               "invention", "invent", "inventing", "invented", "discover", "discovering", "discovered",
+               "discovery", "explore", "exploring", "explored", "exploration", "experiment", "experimenting",
+               "experimented", "experimentation", "nouveauté", "nouveau", "nouvelle", "nouvelles",
+               "nouveaux", "frais", "fraîche", "innovation", "innovant", "innovante", "innover",
+               "différent", "différente", "différence", "variété", "varié", "variée", "divers",
+               "diverse", "diversité", "changement", "changer", "changé", "changée", "unique",
+               "originalité", "original", "originale", "créatif", "créative", "créativité", "créer",
+               "créé", "créée", "invention", "inventer", "inventé", "inventée", "découverte",
+               "découvrir", "découvert", "découverte", "explorer", "exploré", "explorée",
+               "exploration", "expérimenter", "expérimenté", "expérimentée", "expérimentation"],
+
+    "skill": ["skills", "ability", "abilities", "competency", "competencies", "compétence", "compétences",
+              "aptitude", "aptitudes", "habileté", "habiletés", "capability", "capabilities", "talent",
+              "talents", "expertise", "qualification", "qualifications", "proficiency", "proficiencies",
+              "capacity", "capacité", "capacités", "savoir-faire", "know-how", "experience", "experienced",
+              "experiencing", "experiences", "expérience", "expériences", "expérimenté", "expérimentée",
+              "skilled", "skillset", "skillsets", "mastery", "master", "mastered", "mastering", "maîtrise",
+              "maîtriser", "maîtrisé", "knowledgeable", "knowledge", "connaissance", "connaissances",
+              "capable", "competent", "expert", "experts", "expertise", "seasoned", "practiced", "practiced",
+              "proficient", "adept", "specialty", "specialties", "specialized", "specialization", "specialist",
+              "spécialité", "spécialités", "spécialisé", "spécialisation", "spécialiste", "craft", "crafted",
+              "crafting", "craftmanship", "métier", "métiers", "artisan", "artisanat", "dexterity", "dexterous",
+              "dextérité", "prowess", "accomplished", "accomplissement", "trained", "training", "formation",
+              "formé", "formée", "practiced", "practicing", "pratique", "pratiqué", "pratiquée"],
+
+    "relationships": ["social", "interaction", "interactive", "interacting", "people", "interactive", "interacting", "social", "sociale",
+                    "sociaux", "others", "talking", "talk", "students", "colleagues", "interact",
+                    "interaction", "interactions", "interactif", "relationnel", "communiquer", "communication",
+                    "communicating", "others", "workers",
+                    "interpersonal", "networking", "collaborate", "collaborating", "collaboration", "socialization",
+                    "socializing", "colleague", "friends", "comraderie",
+                    "connect", "connecting", "connection", "relations", "relationship", "relationships"],
+
+    "acknowledgement": ["thank", "merci", "appreciated", "thanks", "complimented", "compliments", "reconnaissance",
+                        "reconnu",
+                        "appreciation", "appreciative", "gratitude", "grateful", "recognition", "recognized",
+                        "acknowledging", "reconnaissance",
+                        "acknowledged", "remerciement", "remercié", "valorisation", "valorisé", "praise", "praised"],
+
+    "purpose": ["purpose", "meaning", "meaningful", "sens", "but", "objective", "objectif", "mission", "vocation",
+                "raison",
+                "intention", "goal", "goals", "aim", "aims", "direction", "calling", "destiny", "motivation",
+                "motivating",
+                "cause", "significance", "signification", "fulfilling"],
+
+    "family": [
+        # English terms
+        # Direct family terms
+        "family", "families", "familial", "family-related",
+        "household", "home", "domestic", "domesticity",
+
+        # Family members
+        "spouse", "husband", "wife", "partner",
+        "child", "children", "kid", "kids",
+        "parent", "parents", "parental", "parenting",
+        "mother", "father", "mom", "dad",
+        "sibling", "siblings", "sister", "brother",
+        "grandparent", "grandmother", "grandfather",
+        "relative", "relatives", "relation", "relations",
+
+        # Family roles/relationships
+        "caregiver", "caregiving", "provider", "providing",
+        "breadwinner", "supporter", "supporting",
+        "guardian", "dependent", "dependents",
+
+        # Family life concepts
+        "homelife", "family-life", "home-life",
+        "household", "house", "housing", "shelter",
+        "living", "lifestyle", "life-style",
+        "stability", "security", "wellbeing",
+
+        # French terms
+        # Direct family terms
+        "famille", "familles", "familial", "familiale", "familiaux",
+        "foyer", "maison", "domestique", "domesticité",
+
+        # Family members
+        "conjoint", "conjointe", "mari", "femme", "époux", "épouse",
+        "enfant", "enfants", "gamin", "gamine", "petit", "petite",
+        "parent", "parents", "parental", "parentale",
+        "mère", "père", "maman", "papa",
+        "frère", "soeur", "fratrie", "frères", "soeurs",
+        "grand-parent", "grand-mère", "grand-père",
+        "proche", "proches", "parent", "parenté",
+
+        # Family roles/relationships
+        "aidant", "aidante", "pourvoyeur", "pourvoyeuse",
+        "soutien", "tuteur", "tutrice",
+        "gardien", "gardienne", "dépendant", "dépendante",
+
+        # Family life concepts
+        "vie-familiale", "vie-domestique", "vie-de-famille",
+        "ménage", "maisonnée", "logement", "abri",
+        "mode-de-vie", "style-de-vie", "cadre-de-vie",
+        "stabilité", "sécurité", "bien-être"],
+
+    "providing": [
+            # English terms
+            "provide", "provider", "providing", "provided", "provision", "provisions",
+            "support", "supporting", "supported", "supporter", "breadwinner",
+            "sustain", "sustaining", "sustained", "sustenance",
+            "maintain", "maintaining", "maintained", "maintenance",
+            "care", "caring", "carer", "caregiver", "caregiving",
+            "look-after", "looking-after", "feed", "feeding",
+            "supply", "supplying", "supplier", "contribute", "contributing", "contributor",
+            "sustainer", "livelihood", "living", "means",
+            "deliver", "delivering", "deliverer", "dependent", "dependents",
+            "family-support", "household", "bread-earner", "wage-earner",
+            "guardian", "protector", "shelter", "sheltering",
+            "responsible", "responsibility", "caretaking",
+
+            # French terms
+            "fournir", "fournisseur", "fournisseuse", "fourniture", "fournitures",
+            "soutien", "soutenir", "soutenu", "soutenue",
+            "pourvoyeur", "pourvoyeuse", "pourvoir", "pourvu", "pourvue",
+            "subvenir", "subsistance", "subsister",
+            "entretenir", "entretenu", "entretenue", "entretien",
+            "soin", "soigner", "soigné", "soignée", "soignant", "soignante",
+            "nourrir", "nourricier", "nourricière", "nourriture",
+            "approvisionner", "approvisionnement", "approvisionné",
+            "contribuer", "contribution", "contributeur", "contributrice",
+            "responsable", "responsabilité", "tuteur", "tutrice",
+            "gagne-pain", "soutien-de-famille", "chef-de-famille",
+            "gardien", "gardienne", "protecteur", "protectrice",
+            "dépendant", "dépendante", "dépendants", "dépendantes",
+            "foyer", "ménage", "abri", "abriter"],
+
+    "results": [
+        # English terms
+        # Direct results/outcomes
+        "result", "results", "outcome", "outcomes", "output", "outputs",
+        "product", "products", "production", "produce", "produced",
+        "deliverable", "deliverables", "delivery", "delivered",
+
+        # Impact terms
+        "impact", "impacts", "impacting", "impacted", "influence",
+        "effect", "effects", "affecting", "affected", "difference",
+        "change", "changes", "changing", "changed", "transformation",
+
+        # Achievement terms
+        "achievement", "achieve", "achieved", "achieving",
+        "accomplishment", "accomplish", "accomplished", "accomplishing",
+        "attainment", "attain", "attained", "attaining",
+
+        # Contribution terms
+        "contribution", "contribute", "contributed", "contributing",
+        "value", "valuable", "value-add", "value-added",
+
+        # Performance terms
+        "performance", "perform", "performed", "performing",
+        "execution", "execute", "executed", "executing",
+        "implementation", "implement", "implemented", "implementing",
+
+        # Productivity terms
+        "productivity", "productive", "production", "producing",
+        "efficiency", "efficient", "effectively", "effectiveness",
+
+        # French terms
+        # Direct results/outcomes
+        "résultat", "résultats", "aboutissement", "aboutissements",
+        "produit", "produits", "production", "produire", "produit",
+        "livrable", "livrables", "livraison", "livré", "livrée",
+
+        # Impact terms
+        "impact", "impacts", "impacter", "impacté", "impactée",
+        "influence", "influences", "influencer", "influencé",
+        "effet", "effets", "affecter", "affecté", "affectée",
+        "différence", "différences", "changement", "changements",
+        "transformation", "transformations", "transformer",
+
+        # Achievement terms
+        "réalisation", "réalisations", "réaliser", "réalisé",
+        "accomplissement", "accomplissements", "accomplir", "accompli",
+        "atteinte", "atteindre", "atteint", "atteinte",
+
+        # Contribution terms
+        "contribution", "contributions", "contribuer", "contribué",
+        "valeur", "valeurs", "valorisation", "valoriser", "valorisé",
+
+        # Performance terms
+        "performance", "performances", "performer", "performé",
+        "exécution", "exécuter", "exécuté", "exécutée",
+        "implémentation", "implémenter", "implémenté",
+
+        # Productivity terms
+        "productivité", "productif", "productive", "produire",
+        "efficacité", "efficace", "efficacement", "rendement"],
+
+    "fulfillment": ["fulfill", "fulfilling", "fulfilled", "fulfillment", "self-fulfillment",
+                    "accomplissement", "épanouissement", "épanouir", "realization", "actualization",
+                    "self-actualization", "contentment", "gratifying", "gratification", "enriching",
+                    "enrichment", "worthwhile", "rewarding", "reward", "flourish", "flourishing",
+                    "thrive", "thriving", "achievement", "achieving", "accomplish", "accomplishments", "accomplished",
+                    "realizing", "realized", "actualize", "actualized"],
+
+    "satisfaction": ["satisfaction", "satisfied", "satisfying", "satisfactory", "content", "contented",
+                     "contentment", "pleased", "pleasing", "gratified", "pleasure", "enjoyment",
+                     "enjoy", "enjoying", "enjoyed", "happy", "happiness", "fulfilled", "fulfillment",
+                     "satisfaction", "satisfait", "satisfaite", "satisfaisant", "satisfaisante",
+                     "content", "contente", "plaisir", "heureux", "heureuse", "bonheur"],
+
+    "growth": ["growth", "grow", "growing", "grown", "development", "developing", "developed", "advance",
+               "advancement", "progress", "progression", "expand", "expansion", "evolve", "evolution",
+               "increase", "improvement", "flourish", "thrive", "bloom", "mature", "maturity",
+               "croissance", "croître", "grandir", "développement", "développer", "progresser",
+               "progression", "avancer", "avancement", "évolution", "évoluer", "augmentation",
+               "augmenter", "amélioration", "améliorer", "épanouissement", "épanouir", "maturité",
+               "progressif", "progressive", "opportunity", "opportunities", "opportunités", "occasion",
+               "occasions", "chance", "chances", "prospect", "prospects", "perspective", "perspectives",
+               "possibility", "possibilities", "possibilité", "possibilités", "potential", "potentiel",
+               "develop", "developer", "developmental", "developers", "developments", "développements",
+               "développeur", "développeuse", "developing", "develop", "develops", "developed",
+               "advancement", "advancing", "advance", "advances", "advanced", "enhance", "enhanced",
+               "enhancement", "enhancements", "améliorer", "amélioration", "améliorations", "promote",
+               "promoted", "promotion", "promotions", "promu", "promue", "promotion", "promotions",
+               "cultivate", "cultivated", "cultivation", "cultiver", "cultivé", "cultivée", "nurture",
+               "nurtured", "nurturing", "nourrir", "nourri", "nourrie", "foster", "fostered",
+               "fostering", "encourager", "encouragé", "encouragée", "learn", "learning"],
+
+    "kindness": ["kindness", "kind", "kindly", "compassion", "compassionate", "caring", "care", "cared",
+                "thoughtful", "thoughtfulness", "gentle", "gentleness", "nice", "niceness", "helpful",
+                "helping", "helped", "help", "support", "supporting", "supported", "supportive",
+                "understanding", "understand", "understood", "empathy", "empathetic", "empathic",
+                "sympathy", "sympathetic", "considerate", "consideration", "benevolent", "benevolence",
+                "generous", "generosity", "warmth", "warm", "warming", "goodwill", "altruistic",
+                "altruism", "nurturing", "nurture", "nurtured", "humane", "humanity", "charitable",
+                "charity", "gentil", "gentille", "gentillesse", "compassion", "compatissant",
+                "compatissante", "bienveillant", "bienveillante", "bienveillance", "attentionné",
+                "attentionnée", "attention", "doux", "douce", "douceur", "aidant", "aidante", "aider",
+                "aidé", "aidée", "soutien", "soutenir", "soutenu", "soutenante", "compréhension",
+                "comprendre", "compris", "comprise", "empathie", "empathique", "sympathie",
+                "sympathique", "prévenant", "prévenante", "prévenance", "généreux", "généreuse",
+                "générosité", "chaleureux", "chaleureuse", "chaleur", "altruiste", "altruisme",
+                "nourricier", "nourricière", "humanité", "humain", "humaine", "charitable", "charité"],
+
+    "routine": ["routine", "routines", "regular", "regularly", "routine", "routinier", "quotidien", "daily", "everyday",
+                "repetitive", "répétitif", "recurring", "recurrent", "pattern", "patterns", "habit", "habitual",
+                "schedule", "structure", "order",
+                "scheduled", "rhythm", "rhythmic", "cycle", "cyclical", "protocol", "protocols", "procedure",
+                "procedures"],
+
+    "family": ["family", "famille", "familial", "familiale", "household", "foyer", "maison", "home", "relatives",
+               "parent",
+               "parents", "kids", "children", "enfants", "domestic", "domestique", "clan", "kin", "kinship", "proche",
+               "proches", "familier", "loved", "loving"],
+    "stress": ["stress", "stressed", "stressful", "stressing", "pressure", "pressured", "pressuring",
+               "anxiety", "anxious", "tension", "tense", "strain", "strained", "overwhelm",
+               "overwhelmed", "overwhelming", "burden", "burdened", "burnout", "burned out",
+               "stress", "stressé", "stressée", "stressant", "stressante", "pression",
+               "tension", "tendu", "tendue", "anxiété", "anxieux", "anxieuse", "surcharge",
+               "surchargé", "surchargée", "épuisement", "épuisé", "épuisée", "accablé",
+               "accablée", "surmené", "surmenée"],
+    "flexibility": ["flexibility", "flexible", "flexibly", "adaptable", "adaptability", "adapt",
+                   "adapting", "adjusted", "adjustable", "adjusting", "adjustment", "versatile",
+                   "versatility", "agile", "agility", "accommodating", "accommodate", "fluid",
+                   "fluidity", "souplesse", "flexible", "flexibilité", "adaptable", "adaptabilité",
+                   "adapter", "adapté", "adaptée", "ajustable", "ajusté", "ajustée", "ajustement",
+                   "polyvalent", "polyvalente", "polyvalence", "agile", "agilité", "accommodant",
+                   "accommodante", "fluide", "fluidité", "malléable", "modulable"],
+}
