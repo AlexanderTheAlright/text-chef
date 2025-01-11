@@ -2130,21 +2130,24 @@ if uploaded_file:
 
                         col1, col2 = st.columns(2)
                         with col1:
+                            # Slider for Minimum Co-occurrence Threshold with unique key
                             min_edge_weight = st.slider(
                                 "Minimum co-occurrence threshold",
                                 min_value=1,
                                 max_value=10,
                                 value=2,
-                                help="Minimum number of times words must appear together"
+                                help="Minimum number of times words must appear together",
+                                key=f"min_edge_weight_{survey_id}"
                             )
-
-                        with col2:
+                        
+                            # Slider for Maximum Number of Words with unique key
                             max_words = st.slider(
                                 "Maximum number of words",
                                 min_value=10,
                                 max_value=100,
                                 value=30,
-                                help="Maximum number of words to include in the network"
+                                help="Maximum number of words to include in the network",
+                                key=f"max_words_{survey_id}"
                             )
 
                         network_fig = create_word_cooccurrence_network(
