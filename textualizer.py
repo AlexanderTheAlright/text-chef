@@ -132,6 +132,7 @@ def load_excel_file(file):
         return None, None, {}, []
 
 
+
 def load_grouping_and_var_open_columns(file_path):
     """
     Load unique grouping columns and *_open columns from the Excel file.
@@ -1712,19 +1713,16 @@ with st.sidebar:
             # Get other open variables for comparison
             other_open_vars = [var for var in open_var_options.keys() if var != variable]
 
-            # Group by options are either the base variable or other open variables
-            group_options = ['None', base_var] + other_open_vars
-
-            # Group by option
+            # Group by options
             st.markdown("---")
             st.subheader("🔄 Grouping Options")
             group_by = st.selectbox(
                 "Group responses by",
-                options=group_options,
-                help="Select base variable to group by, or another open variable to compare"
+                options=['None'] + grouping_columns,
+                help="Select any column to group by."
             )
-
             group_by = None if group_by == 'None' else group_by
+
 
             # Add a separator before the existing sidebar controls
             st.markdown("---")
