@@ -488,52 +488,60 @@ def get_text_columns(responses_df, question_mapping, survey_id):
     return sorted(valid_vars)
 
 
-def process_text(text, stopwords=None, synonyms=None):
+def process_text(text, stopwords=None, synonym_groups=None):
     """
-    Clean and process text with improved stopword handling and synonym support
+    Clean and process text with improved stopword handling and synonym group support.
+    
+    Parameters:
+    - text: str - Input text to process
+    - stopwords: set - Set of stopwords to remove
+    - synonym_groups: dict - Dictionary mapping group names to sets of synonyms
+    
+    Returns:
+    - str - Processed text
     """
-    # Debug print to see what text is being received
-    print(f"Input text: {text[:100]}...")  # First 100 chars
-
     if pd.isna(text) or not isinstance(text, (str, bytes)):
-        print(f"Rejected - Invalid type or NaN: {type(text)}")
         return ""
 
     # Convert to string and lowercase
     text = str(text).lower().strip()
     
-    # Print the text after initial cleaning
-    print(f"After initial cleaning: {text[:100]}...")
-    
-    # Check for invalid responses - print if found
+    # Check for invalid responses
     invalid_responses = {'dk', 'dk.', 'd/k', 'd.k.', 'dont know', "don't know", 
                         'na', 'n/a', 'n.a.', 'n/a.', 'not applicable',
                         'none', 'nil', 'no response', 'no answer', '.', '-', 'x'}
     
     if text in invalid_responses:
-        print(f"Rejected - Invalid response: {text}")
         return ""
 
     # Remove HTML tags and clean text
     text = re.sub(r'<[^>]+>', '', text)
     text = re.sub(r'[^\w\s]', ' ', text)  # Replace punctuation with spaces
     text = re.sub(r'\s+', ' ', text).strip()  # Normalize whitespace
-    
-    # Print text after cleaning
-    print(f"After cleaning: {text[:100]}...")
 
-    # Split into words and apply stopwords/synonyms
+    # Split into words
     words = text.split()
+    
+    # Apply stopwords if provided
     if stopwords:
         words = [word for word in words if word not in stopwords]
     
-    if synonyms:
-        words = [synonyms.get(word, word) for word in words]
+    # Apply synonym groups if provided
+    if synonym_groups:
+        processed_words = []
+        for word in words:
+            replaced = False
+            for group_name, synonyms in synonym_groups.items():
+                if word in synonyms:
+                    processed_words.append(group_name)
+                    replaced = True
+                    break
+            if not replaced:
+                processed_words.append(word)
+        words = processed_words
 
-    result = ' '.join(words)
-    print(f"Final processed text: {result[:100]}...")
-    
-    return result
+    # Join and return
+    return ' '.join(word for word in words if word)
 
 def get_responses_for_variable(dfs_dict, var, group_by=None):
     """Get responses for a variable across all surveys"""
@@ -604,21 +612,15 @@ def get_responses_for_variable(dfs_dict, var, group_by=None):
     return responses_by_survey
 
 
-def generate_wordcloud(texts, stopwords=None, synonyms=None, colormap='viridis',
-                       highlight_words=None):
-    """Generate wordcloud with improved settings"""
+def generate_wordcloud(texts, stopwords=None, synonym_groups=None, colormap='viridis', highlight_words=None):
+    """Generate wordcloud with improved error handling and synonym support"""
     if not texts:
         return None
 
-    # Get current stopwords from session state if none provided
-    if stopwords is None:
-        stopwords = st.session_state.get('preview_stopwords',
-                                         st.session_state.get('custom_stopwords', set()))
-
     processed_texts = []
     for text in texts:
-        processed = process_text(text, stopwords, synonyms)
-        if processed:
+        processed = process_text(text, stopwords, synonym_groups)
+        if processed:  # Only add non-empty processed texts
             processed_texts.append(processed)
 
     if not processed_texts:
@@ -638,14 +640,15 @@ def generate_wordcloud(texts, stopwords=None, synonyms=None, colormap='viridis',
             background_color='white',
             colormap=colormap if not highlight_words else None,
             color_func=color_func if highlight_words else None,
-            stopwords=stopwords,
+            stopwords=stopwords if stopwords else set(),
             collocations=False,
             min_word_length=2,
             prefer_horizontal=0.7,
             scale=2
         ).generate(text)
         return wc
-    except Exception:
+    except Exception as e:
+        print(f"Error generating wordcloud: {str(e)}")
         return None
 
 
