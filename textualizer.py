@@ -138,6 +138,18 @@ def get_standard_samples(texts_by_group, n_samples=5, seed=None):
 
     return samples_by_group
 
+def safe_plotly_chart(figure, container, message="Unable to display visualization"):
+    """Safely display a Plotly figure with error handling"""
+    if figure is not None:
+        try:
+            if not isinstance(figure, go.Figure):
+                container.warning("Invalid visualization data")
+                return
+            container.plotly_chart(figure, use_container_width=True)
+        except Exception as e:
+            container.warning(message)
+    else:
+        container.warning("No data available for visualization")
 
 def find_word_in_responses(texts_by_group, search_word):
     """
@@ -2106,7 +2118,7 @@ if uploaded_file:
                             color_continuous_scale='Viridis'
                         )
                         fig.update_traces(texttemplate='%{y}', textposition='outside')
-                        st.plotly_chart(fig, use_container_width=True)
+                        safe_plotly_chart(fig, st, "Unable to display word frequency chart")
 
                         # Network Analysis Section
                         st.markdown("---")
@@ -2137,7 +2149,7 @@ if uploaded_file:
                             max_words=max_words,
                             stopwords=st.session_state.custom_stopwords
                         )
-                        st.plotly_chart(network_fig, use_container_width=True)
+                        safe_plotly_chart(network_fig, st, "Unable to display word co-occurrence network")
 
                         # Co-occurrence table
                         st.markdown("---")
@@ -2301,7 +2313,7 @@ if uploaded_file:
                                 hover_data=['Terms'],
                                 title='Topic Distribution'
                             )
-                            st.plotly_chart(fig, use_container_width=True)
+                            safe_plotly_chart(fig, st, "Unable to display topic distribution")
 
                             # Add topic size distribution
                             sizes_fig = px.bar(
@@ -2311,7 +2323,7 @@ if uploaded_file:
                                 title='Topic Sizes',
                                 labels={'Count': 'Number of Responses', 'Topic': 'Topic ID'}
                             )
-                            st.plotly_chart(sizes_fig, use_container_width=True)
+                            safe_plotly_chart(sizes_fig, st, "Unable to display topic sizes")
 
                         with topic_tabs[1]:
                             # Display detailed topic information
@@ -2329,7 +2341,7 @@ if uploaded_file:
                                         orientation='h',
                                         title=f'Term Frequencies for Topic {row["Topic"]}'
                                     )
-                                    st.plotly_chart(term_fig, use_container_width=True)
+                                    safe_plotly_chart(term_fig, st, "Unable to display term frequencies")
 
                         with topic_tabs[2]:
                             # Display sample responses for each topic
@@ -2405,7 +2417,7 @@ if uploaded_file:
                 viz_tabs = st.tabs(["🌟 Sunburst", "📡 Radar", "📊 Distribution"])
 
                 with viz_tabs[0]:
-                    sunburst_fig = create_sentiment_sunburst(sentiment_stats)
+                    safe_plotly_chart(sunburst_fig, st, "Unable to display sentiment sunburst chart")
                     if sunburst_fig is not None:
                         try:
                             st.plotly_chart(sunburst_fig, use_container_width=True)
@@ -2425,10 +2437,10 @@ if uploaded_file:
                         st.warning("Not enough data to generate sentiment visualization")
 
                 with viz_tabs[1]:
-                    st.plotly_chart(
-                        create_sentiment_radar(sentiment_stats),
-                        use_container_width=True
-                    )
+                    safe_plotly_chart(
+                        create_sentiment_radar(sentiment_stats), 
+                        st, 
+                        "Unable to display sentiment radar chart"
 
                     st.markdown("""
                                 **Understanding the Radar Chart:**
@@ -2439,9 +2451,10 @@ if uploaded_file:
                                 """)
 
                 with viz_tabs[2]:
-                    st.plotly_chart(
-                        create_sentiment_distribution(sentiment_stats),
-                        use_container_width=True
+                    safe_plotly_chart(
+                        create_sentiment_distribution(sentiment_stats), 
+                        st, 
+                        "Unable to display sentiment distribution"
                     )
 
                     st.markdown("""
