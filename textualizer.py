@@ -64,6 +64,8 @@ if 'grouping_options' not in st.session_state:
 if 'var_open_columns' not in st.session_state:
     st.session_state.var_open_columns = {}  # Store *_open columns from all sheets
 
+grouping_columns = []
+
 
 @st.cache_data
 def load_excel_file(file):
