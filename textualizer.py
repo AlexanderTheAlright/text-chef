@@ -2639,7 +2639,7 @@ if uploaded_file:
                     st.error(f"Error analyzing themes: {str(e)}")
                     st.info("Try adjusting the analysis settings or check your data format.")
 
-        # Sample Responses Section
+# Sample Responses Section
         st.markdown("---")
         st.markdown("## Response Examples")
 
