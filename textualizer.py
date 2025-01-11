@@ -1220,21 +1220,6 @@ def create_sentiment_distribution(sentiment_stats):
         logging.error(f"Error processing sentiment data: {str(e)}")
         return None
 
-# In the main app, modify the sentiment visualization section:
-with tabs[3]:
-    try:
-        if sentiment_stats:
-            # Create the visualization
-            sentiment_dist_fig = create_sentiment_distribution(sentiment_stats)
-            if sentiment_dist_fig:
-                st.plotly_chart(sentiment_dist_fig, use_container_width=True)
-            else:
-                st.info("Not enough data to generate sentiment distribution visualization.")
-    except Exception as e:
-        import logging
-        logging.error(f"Error in sentiment visualization: {str(e)}")
-        st.info("Unable to generate sentiment distribution visualization at this time.")
-
 def analyze_group_sentiment(texts_by_group):
     """Analyze sentiment for each group's texts with improved error handling"""
     try:
