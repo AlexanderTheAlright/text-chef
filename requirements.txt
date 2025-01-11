@@ -12,3 +12,7 @@ openpyxl
 xlrd
 xlsxwriter
 python-dateutil
+sentence-transformers
+regex
+collections-extended
+
