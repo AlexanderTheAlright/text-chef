@@ -1779,16 +1779,6 @@ with st.sidebar:
                     height=100
                 )
 
-                # Update permanent stopwords when update button is clicked
-                if st.button("Update Dictionary"):
-                    new_stopwords = {
-                        word.lower().strip()
-                        for word in permanent_stopwords.split('\n')
-                        if word.strip()
-                    }
-                    update_stopwords(new_stopwords, is_preview=False)
-                    st.success(f"Dictionary updated with {len(new_stopwords)} words")
-
 if uploaded_file:
     if question_mapping is not None and responses_dict is not None and open_var_options and variable:
         # Show response counts by survey/group
