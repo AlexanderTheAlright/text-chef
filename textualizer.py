@@ -31,62 +31,69 @@ st.set_page_config(
 
 # Initialize session state
 if 'custom_stopwords' not in st.session_state:
-    # Try to load existing stopwords from CSV
     try:
         custom_stopwords_df = pd.read_csv('custom_stopwords.csv')
         st.session_state.custom_stopwords = set(custom_stopwords_df['word'].tolist())
     except FileNotFoundError:
         st.session_state.custom_stopwords = set(list(STOPWORDS))
-if 'synonyms' not in st.session_state:
-    st.session_state.synonyms = defaultdict(set)
 
 
 @st.cache_data
 def load_excel_file(file):
     """Load Excel file and return question mapping and all survey responses"""
     try:
-        # Get all sheet names
+        # Load Excel file
         excel_file = pd.ExcelFile(file)
         all_sheets = excel_file.sheet_names
 
-        # First sheet is always question_mapping
-        question_mapping = pd.read_excel(file, sheet_name='question_mapping')
+        # Load question_mapping sheet
+        if 'question_mapping' in all_sheets:
+            question_mapping = pd.read_excel(file, sheet_name='question_mapping')
+        else:
+            st.error("'question_mapping' sheet not found in the uploaded file.")
+            return None, None, {}
 
-        # All other sheets are surveys
+        # Load all survey response sheets
         survey_sheets = [sheet for sheet in all_sheets if sheet != 'question_mapping']
-
-        # Load all survey sheets
-        responses_dict = {}
-        for sheet in survey_sheets:
-            responses_dict[sheet] = pd.read_excel(
+        responses_dict = {
+            sheet: pd.read_excel(
                 file,
                 sheet_name=sheet,
                 na_values=['', '#N/A', 'N/A', 'n/a', '<NA>', 'NULL', 'null', 'None', 'none'],
                 keep_default_na=True
             )
+            for sheet in survey_sheets
+        }
 
-        # Find all *_open variables in question mapping
+        # Identify *_open variables in all sheets
+        all_open_vars = set()
+        for df in responses_dict.values():
+            all_open_vars.update(col for col in df.columns if col.endswith('_open'))
+
+        # Map *_open variables to their questions
         open_vars = question_mapping[
-            question_mapping['variable'].str.endswith('_open', na=False)
+            question_mapping['variable'].isin(all_open_vars)
         ]
 
-        # Create variable display names with questions (showing full question directly)
+        # Prepare display options for variables
         open_var_options = {
             row['variable']: f"{row['variable']} - {row['question']}"
             for _, row in open_vars.iterrows()
         }
 
-        # Debug info
+        # Debug Information
         with st.expander("Debug Information", expanded=False):
             st.write(f"Loaded {len(survey_sheets)} survey sheets: {survey_sheets}")
-            st.write(f"Found {len(open_var_options)} *_open variables")
+            st.write(f"Found {len(all_open_vars)} *_open variables: {sorted(all_open_vars)}")
+            st.write(f"Mapped to {len(open_var_options)} questions.")
             for sheet, df in responses_dict.items():
-                st.write(f"Sheet {sheet}: {len(df)} rows")
+                st.write(f"Sheet '{sheet}': {len(df)} rows, {len(df.columns)} columns")
 
         return question_mapping, responses_dict, open_var_options
     except Exception as e:
         st.error(f"Error loading file: {e}")
         return None, None, {}
+
 def get_standard_samples(texts_by_group, n_samples=5, seed=None):
     """
     Get standard random samples for each group.
@@ -1667,13 +1674,6 @@ with st.sidebar:
 
             # Add synonym management
             add_synonym_management_to_sidebar()
-
-            if 'custom_stopwords' not in st.session_state:
-                try:
-                    custom_stopwords_df = pd.read_csv('custom_stopwords.csv')
-                    st.session_state.custom_stopwords = set(custom_stopwords_df['word'].tolist())
-                except FileNotFoundError:
-                    st.session_state.custom_stopwords = set(list(STOPWORDS))
 
             if 'preview_stopwords' not in st.session_state:
                 st.session_state.preview_stopwords = st.session_state.custom_stopwords.copy()
