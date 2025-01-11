@@ -502,12 +502,6 @@ def get_responses_for_variable(dfs_dict, var, group_by=None):
     current_stopwords = st.session_state.get('preview_stopwords',
                                            st.session_state.get('custom_stopwords', set()))
 
-    # Debug information
-    st.write("Debug Information:")
-    st.write(f"Variable being processed: {var}")
-    st.write(f"Group by: {group_by}")
-    st.write(f"Number of surveys: {len(dfs_dict)}")
-
     for survey_id, df in dfs_dict.items():
         st.write(f"\nProcessing survey: {survey_id}")
         st.write(f"Available columns: {df.columns.tolist()}")
