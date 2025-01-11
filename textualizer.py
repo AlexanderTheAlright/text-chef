@@ -80,9 +80,6 @@ def load_excel_file(file):
         # Load the Excel file
         excel_file = pd.ExcelFile(file)
 
-        # Debugging: Show available sheets
-        st.write("Available sheets in the file:", excel_file.sheet_names)
-
         # Validate the presence of question_mapping sheet
         if 'question_mapping' not in excel_file.sheet_names:
             st.error("The file must contain a 'question_mapping' sheet.")
@@ -90,7 +87,6 @@ def load_excel_file(file):
 
         # Load question_mapping sheet
         question_mapping = pd.read_excel(excel_file, sheet_name='question_mapping')
-        st.write("Loaded 'question_mapping' sheet.")
 
         # Validate required columns in question_mapping
         required_columns = {'variable', 'question'}
@@ -110,7 +106,6 @@ def load_excel_file(file):
         grouping_columns = set()
 
         for sheet in response_sheets:
-            st.write(f"Loading sheet: {sheet}")
             df = pd.read_excel(excel_file, sheet_name=sheet)
             responses_dict[sheet] = df
             grouping_columns.update(df.columns)
@@ -125,8 +120,9 @@ def load_excel_file(file):
             else:
                 open_var_options[open_var] = open_var
 
-        # Debugging output
-        with st.expander("Debug Information", expanded=True):
+        # Optional debugging information
+        with st.expander("Debug Information (Optional)", expanded=False):
+            st.write(f"Available sheets: {excel_file.sheet_names}")
             st.write(f"Response sheets: {response_sheets}")
             st.write(f"Grouping columns: {sorted(grouping_columns)}")
             st.write(f"Open variables: {sorted(all_open_vars)}")
@@ -135,46 +131,8 @@ def load_excel_file(file):
         return question_mapping, responses_dict, open_var_options, sorted(grouping_columns)
 
     except Exception as e:
-        st.error(f"Error while processing the file: {e}")
+        st.error(f"An error occurred while processing the file: {e}")
         raise
-
-def load_grouping_and_var_open_columns(file_path):
-    """
-    Load unique grouping columns and *_open columns from the Excel file.
-
-    Parameters:
-    - file_path: Path to the uploaded Excel file.
-
-    Returns:
-    - grouping_options: List of unique column names for grouping.
-    - var_open_columns: Dictionary with sheet names as keys and list of *_open columns as values.
-    """
-    try:
-        # Load the Excel file
-        excel_file = pd.ExcelFile(file_path)
-
-        # Ensure the first sheet is 'question_mapping' and skip it
-        all_sheets = excel_file.sheet_names
-        sheets_to_process = [sheet for sheet in all_sheets if sheet != 'question_mapping']
-
-        grouping_columns = set()
-        var_open_columns = {}
-
-        for sheet_name in sheets_to_process:
-            df = pd.read_excel(excel_file, sheet_name=sheet_name)
-
-            # Collect grouping options (all column names)
-            grouping_columns.update(df.columns)
-
-            # Collect *_open columns
-            open_columns = [col for col in df.columns if col.endswith('_open')]
-            if open_columns:
-                var_open_columns[sheet_name] = open_columns
-
-        return sorted(grouping_columns), var_open_columns
-    except Exception as e:
-        st.error(f"Error processing file: {e}")
-        return [], {}
 
 def get_standard_samples(texts_by_group, n_samples=5, seed=None):
     """
