@@ -81,22 +81,28 @@ def load_excel_file(file):
         excel_file = pd.ExcelFile(file)
 
         # Debugging: Show available sheets
-        st.write("Available sheets:", excel_file.sheet_names)
+        st.write("Available sheets in the file:", excel_file.sheet_names)
 
-        # Validate question_mapping sheet
+        # Validate the presence of question_mapping sheet
         if 'question_mapping' not in excel_file.sheet_names:
+            st.error("The file must contain a 'question_mapping' sheet.")
             raise ValueError("Sheet 'question_mapping' is missing in the file.")
 
+        # Load question_mapping sheet
         question_mapping = pd.read_excel(excel_file, sheet_name='question_mapping')
+        st.write("Loaded 'question_mapping' sheet.")
 
-        # Check required columns in question_mapping
+        # Validate required columns in question_mapping
         required_columns = {'variable', 'question'}
         if not required_columns.issubset(set(question_mapping.columns)):
-            raise ValueError(f"Missing required columns in 'question_mapping': {required_columns - set(question_mapping.columns)}")
+            missing_columns = required_columns - set(question_mapping.columns)
+            st.error(f"Missing required columns in 'question_mapping': {missing_columns}")
+            raise ValueError(f"Missing required columns in 'question_mapping': {missing_columns}")
 
-        # Load other sheets as responses
+        # Load all other sheets
         response_sheets = [sheet for sheet in excel_file.sheet_names if sheet != 'question_mapping']
         if not response_sheets:
+            st.error("No response sheets found in the file.")
             raise ValueError("No response sheets found in the file.")
 
         responses_dict = {}
@@ -104,10 +110,9 @@ def load_excel_file(file):
         grouping_columns = set()
 
         for sheet in response_sheets:
+            st.write(f"Loading sheet: {sheet}")
             df = pd.read_excel(excel_file, sheet_name=sheet)
             responses_dict[sheet] = df
-
-            # Collect grouping columns and *_open variables
             grouping_columns.update(df.columns)
             all_open_vars.update([col for col in df.columns if col.endswith('_open')])
 
@@ -120,16 +125,17 @@ def load_excel_file(file):
             else:
                 open_var_options[open_var] = open_var
 
-        # Debugging: Display loaded data
-        with st.expander("Debug Information"):
-            st.write(f"Loaded sheets: {response_sheets}")
+        # Debugging output
+        with st.expander("Debug Information", expanded=True):
+            st.write(f"Response sheets: {response_sheets}")
             st.write(f"Grouping columns: {sorted(grouping_columns)}")
             st.write(f"Open variables: {sorted(all_open_vars)}")
+            st.write(f"Open variable options: {open_var_options}")
 
         return question_mapping, responses_dict, open_var_options, sorted(grouping_columns)
 
     except Exception as e:
-        st.error(f"Error processing file: {e}")
+        st.error(f"Error while processing the file: {e}")
         raise
 
 def load_grouping_and_var_open_columns(file_path):
