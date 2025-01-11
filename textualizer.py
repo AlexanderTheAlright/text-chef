@@ -518,12 +518,12 @@ def process_text(text, stopwords=None, synonyms=None):
         return
 
 def get_responses_for_variable(dfs_dict, var, group_by=None):
-    """Get responses for a variable across all surveys"""
+    """Get responses for a variable across all surveys with improved error handling"""
     responses_by_survey = {}
 
     # Get current stopwords from session state
     current_stopwords = st.session_state.get('preview_stopwords',
-                                             st.session_state.get('custom_stopwords', set()))
+                                           st.session_state.get('custom_stopwords', set()))
 
     for survey_id, df in dfs_dict.items():
         # Find matching columns for this variable
@@ -536,11 +536,14 @@ def get_responses_for_variable(dfs_dict, var, group_by=None):
 
             for col in matching_cols:
                 temp_df = df[[col, group_by]].copy()
+                # Convert all values to string and handle NaN/None values
                 temp_df[col] = temp_df[col].fillna('').astype(str)
-                temp_df[col] = temp_df[col].apply(lambda x: process_text(x, current_stopwords))
+                # Process text after ensuring string type
+                temp_df[col] = temp_df[col].apply(lambda x: process_text(x, current_stopwords) if isinstance(x, str) else '')
 
                 for group_val, group_df in temp_df.groupby(group_by):
-                    responses = [resp for resp in group_df[col].tolist() if resp.strip()]
+                    # Only include non-empty responses
+                    responses = [resp for resp in group_df[col].tolist() if isinstance(resp, str) and resp.strip()]
                     if responses:
                         grouped_responses[str(group_val)].extend(responses)
 
@@ -549,31 +552,35 @@ def get_responses_for_variable(dfs_dict, var, group_by=None):
                 seen = set()
                 unique_responses = []
                 for resp in grouped_responses[group_val]:
-                    resp_clean = resp.strip()
-                    if resp_clean and resp_clean not in seen:
-                        seen.add(resp_clean)
-                        unique_responses.append(resp_clean)
+                    if isinstance(resp, str):
+                        resp_clean = resp.strip()
+                        if resp_clean and resp_clean not in seen:
+                            seen.add(resp_clean)
+                            unique_responses.append(resp_clean)
                 if unique_responses:
                     responses_by_survey[f"{survey_id}_{group_val}"] = unique_responses
         else:
-            # Original ungrouped logic
+            # Original ungrouped logic with improved error handling
             responses = []
             for col in matching_cols:
                 series = df[col].fillna('').astype(str)
-                series = series.apply(lambda x: process_text(x, current_stopwords))
+                # Process text after ensuring string type
+                series = series.apply(lambda x: process_text(x, current_stopwords) if isinstance(x, str) else '')
 
                 na_values = {'', 'nan', 'n/a', 'na', '<na>', 'none', 'null', '#n/a', '0'}
                 valid = series[~series.str.lower().isin(na_values)]
-                responses.extend([resp for resp in valid.tolist() if resp.strip()])
+                # Only include non-empty responses
+                responses.extend([resp for resp in valid.tolist() if isinstance(resp, str) and resp.strip()])
 
             # Remove duplicates while preserving order
             seen = set()
             unique_responses = []
             for resp in responses:
-                resp_clean = resp.strip()
-                if resp_clean and resp_clean not in seen:
-                    seen.add(resp_clean)
-                    unique_responses.append(resp_clean)
+                if isinstance(resp, str):
+                    resp_clean = resp.strip()
+                    if resp_clean and resp_clean not in seen:
+                        seen.add(resp_clean)
+                        unique_responses.append(resp_clean)
 
             if unique_responses:
                 responses_by_survey[survey_id] = unique_responses
