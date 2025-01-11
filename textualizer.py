@@ -114,28 +114,33 @@ def load_excel_file(file):
         return None, None, None, None
 
 def get_standard_samples(texts_by_group, n_samples=5, seed=None):
-    """
-    Get standard random samples for each group.
-
-    Parameters:
-    - texts_by_group: dict -> Dictionary with group names as keys and lists of texts as values
-    - n_samples: int -> Number of samples to return per group
-    - seed: int or None -> Random seed for reproducibility
-    """
+    """Get standard random samples with improved validation"""
     if seed is not None:
         np.random.seed(seed)
-
+    
     samples_by_group = {}
-
+    
     for group, texts in texts_by_group.items():
-        valid_texts = [text for text in texts if isinstance(text, str) and text.strip()]
+        # Print debug info
+        print(f"Processing group {group}: {len(texts)} texts")
+        
+        # Filter valid texts
+        valid_texts = [
+            text for text in texts 
+            if isinstance(text, str) and text.strip() and 
+            not pd.isna(text) and text.lower() not in {'nan', 'none', 'n/a', 'na'}
+        ]
+        
+        print(f"Valid texts for group {group}: {len(valid_texts)}")
+        
         if valid_texts:
             n = min(n_samples, len(valid_texts))
             samples = np.random.choice(valid_texts, size=n, replace=False)
             samples_by_group[group] = list(samples)
         else:
             samples_by_group[group] = []
-
+            print(f"No valid texts found for group {group}")
+    
     return samples_by_group
 
 def safe_plotly_chart(figure, container, message="Unable to display visualization"):
@@ -174,24 +179,41 @@ def find_word_in_responses(texts_by_group, search_word):
 
 
 def display_standard_samples(texts_by_group, n_samples=5):
-    """Display standard random samples for each group."""
+    """Display standard random samples for each group with improved error handling"""
     st.markdown("### Standard Sample Responses")
-
-    # Generate samples
-    samples = get_standard_samples(texts_by_group, n_samples)
-
-    # Create tabs for each group
-    if samples:
-        group_tabs = st.tabs(list(samples.keys()))
-
-        for tab, (group, group_samples) in zip(group_tabs, samples.items()):
-            with tab:
-                if group_samples:
-                    for i, sample in enumerate(group_samples, 1):
-                        with st.expander(f"Response {i}", expanded=True):
-                            st.write(sample)
-                else:
-                    st.warning("No responses available for this group.")
+    
+    # Debug print
+    print(f"Number of groups: {len(texts_by_group)}")
+    for group, texts in texts_by_group.items():
+        print(f"Group {group}: {len(texts)} texts")
+    
+    if not texts_by_group:
+        st.warning("No responses available to display.")
+        return
+        
+    # Generate samples with error handling
+    try:
+        samples = get_standard_samples(texts_by_group, n_samples, st.session_state.get('sample_seed'))
+        
+        # Create tabs for each group
+        if samples:
+            group_tabs = st.tabs(list(samples.keys()))
+            
+            for tab, (group, group_samples) in zip(group_tabs, samples.items()):
+                with tab:
+                    if group_samples:
+                        for i, sample in enumerate(group_samples, 1):
+                            if isinstance(sample, str) and sample.strip():  # Validate sample
+                                with st.expander(f"Response {i}", expanded=True):
+                                    st.write(sample)
+                            else:
+                                st.warning(f"Invalid response found in group {group}")
+                    else:
+                        st.warning("No valid responses available for this group.")
+        else:
+            st.warning("No valid samples could be generated.")
+    except Exception as e:
+        st.error(f"Error displaying samples: {str(e)}")
 
 
 # Core Synonym Management Functions
