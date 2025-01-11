@@ -179,41 +179,43 @@ def find_word_in_responses(texts_by_group, search_word):
 
 
 def display_standard_samples(texts_by_group, n_samples=5):
-    """Display standard random samples for each group with improved error handling"""
-    st.markdown("### Standard Sample Responses")
-    
-    # Debug print
-    print(f"Number of groups: {len(texts_by_group)}")
-    for group, texts in texts_by_group.items():
-        print(f"Group {group}: {len(texts)} texts")
+    """Display standard random samples for each group with improved handling"""
+    st.markdown("### Sample Responses")
     
     if not texts_by_group:
         st.warning("No responses available to display.")
         return
-        
-    # Generate samples with error handling
-    try:
-        samples = get_standard_samples(texts_by_group, n_samples, st.session_state.get('sample_seed'))
-        
-        # Create tabs for each group
-        if samples:
-            group_tabs = st.tabs(list(samples.keys()))
-            
-            for tab, (group, group_samples) in zip(group_tabs, samples.items()):
-                with tab:
-                    if group_samples:
-                        for i, sample in enumerate(group_samples, 1):
-                            if isinstance(sample, str) and sample.strip():  # Validate sample
-                                with st.expander(f"Response {i}", expanded=True):
-                                    st.write(sample)
-                            else:
-                                st.warning(f"Invalid response found in group {group}")
-                    else:
-                        st.warning("No valid responses available for this group.")
-        else:
-            st.warning("No valid samples could be generated.")
-    except Exception as e:
-        st.error(f"Error displaying samples: {str(e)}")
+
+    # Create tabs for each group
+    group_tabs = st.tabs(list(texts_by_group.keys()))
+    
+    for tab, group_name in zip(group_tabs, texts_by_group.keys()):
+        with tab:
+            texts = texts_by_group[group_name]
+            if texts:
+                # Filter valid texts
+                valid_texts = [
+                    text for text in texts 
+                    if isinstance(text, str) and text.strip() and 
+                    not pd.isna(text) and text.lower() not in {'nan', 'none', 'n/a', 'na'}
+                ]
+                
+                if valid_texts:
+                    # Get random samples
+                    n = min(n_samples, len(valid_texts))
+                    if st.session_state.get('sample_seed') is not None:
+                        np.random.seed(st.session_state.sample_seed)
+                    samples = np.random.choice(valid_texts, size=n, replace=False)
+                    
+                    # Display samples
+                    st.write(f"Showing {n} of {len(valid_texts)} responses")
+                    for i, sample in enumerate(samples, 1):
+                        with st.expander(f"Response {i}", expanded=True):
+                            st.write(sample)
+                else:
+                    st.warning("No valid responses available for this group.")
+            else:
+                st.warning(f"No responses available for {group_name}")
 
 
 # Core Synonym Management Functions
@@ -472,19 +474,19 @@ def get_text_columns(responses_df, question_mapping, survey_id):
     """Get all text-based columns that exist in the question mapping for the given survey"""
     # Get all variables for this survey from question mapping
     survey_vars = question_mapping[question_mapping['surveyid'] == survey_id]['variable'].tolist()
-
-    # Filter for variables ending exactly with '*_open'
-    open_vars = [var for var in survey_vars if str(var).endswith('*_open')]
-
+    
+    # Filter for variables ending with '_open'
+    open_vars = [var for var in survey_vars if str(var).endswith('_open')]
+    
     # Get base column names from responses
     response_cols = set()
     for col in responses_df.columns:
         base_col = col.split('.')[0]  # Remove .1 suffix if present
         response_cols.add(base_col)
-
+    
     # Return only variables that exist in both mapping and responses
     valid_vars = [var for var in open_vars if var in response_cols]
-
+    
     return sorted(valid_vars)
 
 
