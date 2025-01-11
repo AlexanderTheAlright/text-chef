@@ -70,17 +70,21 @@ grouping_columns = []
 @st.cache_data
 def load_excel_file(file):
     """
-    Load Excel file and extract required data.
-
+    Load Excel file and extract required data with improved variable detection.
+    
     Returns:
-    - question_mapping: DataFrame for question_mapping sheet.
-    - responses_dict: Dictionary of DataFrames for other sheets.
-    - open_var_options: Dictionary of *_open variables with questions.
-    - grouping_columns: Set of unique column names across sheets.
+    - question_mapping: DataFrame for question_mapping sheet
+    - responses_dict: Dictionary of DataFrames for other sheets
+    - open_var_options: Dictionary of *_open/*_na variables with questions
+    - grouping_columns: Set of unique column names across sheets
     """
     try:
         # Load the Excel file
         excel_file = pd.ExcelFile(file)
+        
+        # Debug information
+        st.write("Loading Excel file...")
+        st.write(f"Available sheets: {excel_file.sheet_names}")
 
         # Validate the presence of question_mapping sheet
         if 'question_mapping' not in excel_file.sheet_names:
@@ -89,14 +93,7 @@ def load_excel_file(file):
 
         # Load question_mapping sheet
         question_mapping = pd.read_excel(excel_file, sheet_name='question_mapping')
-
-        # Validate required columns in question_mapping
-        required_columns = {'variable', 'question'}
-        if not required_columns.issubset(set(question_mapping.columns)):
-            missing_columns = required_columns - set(question_mapping.columns)
-            st.error(f"Missing required columns in 'question_mapping': {missing_columns}")
-            raise ValueError(f"Missing required columns in 'question_mapping': {missing_columns}")
-
+        
         # Load all other sheets
         response_sheets = [sheet for sheet in excel_file.sheet_names if sheet != 'question_mapping']
         if not response_sheets:
@@ -107,13 +104,20 @@ def load_excel_file(file):
         all_open_vars = set()
         grouping_columns = set()
 
+        # Process each response sheet
         for sheet in response_sheets:
             df = pd.read_excel(excel_file, sheet_name=sheet)
             responses_dict[sheet] = df
             grouping_columns.update(df.columns)
-            all_open_vars.update([col for col in df.columns if col.endswith('_open')])
+            
+            # Find all open-ended variables (ending with _open or _na)
+            open_vars = [col for col in df.columns if col.endswith('_open') or col.endswith('_na')]
+            all_open_vars.update(open_vars)
 
-        # Map *_open variables to questions
+        # Debug information for open variables
+        st.write("Found open-ended variables:", sorted(all_open_vars))
+
+        # Map variables to questions
         open_var_options = {}
         for open_var in all_open_vars:
             question_row = question_mapping[question_mapping['variable'] == open_var]
@@ -122,7 +126,11 @@ def load_excel_file(file):
             else:
                 open_var_options[open_var] = open_var
 
-        # Optional debugging information
+        # Debug information
+        st.write("Number of response sheets:", len(response_sheets))
+        st.write("Number of open variables found:", len(all_open_vars))
+        st.write("Number of mapped questions:", len(open_var_options))
+
         with st.expander("Debug Information (Optional)", expanded=False):
             st.write(f"Available sheets: {excel_file.sheet_names}")
             st.write(f"Response sheets: {response_sheets}")
