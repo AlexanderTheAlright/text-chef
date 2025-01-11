@@ -2712,11 +2712,5 @@ if uploaded_file:
                                 st.markdown(highlighted_text)
             else:
                 st.warning(f"No responses found containing '{search_word}'.")
-        else:
-            # Display random samples when no search word is entered
-            if st.button("🔄 Generate New Random Samples"):
-                st.session_state.sample_seed = int(time.time())
-        
-            display_standard_samples(texts_by_group, n_samples=5)
     else:
         st.error("No open-ended variables found in the file")
