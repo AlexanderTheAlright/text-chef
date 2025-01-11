@@ -3,13 +3,12 @@ pandas
 numpy
 wordcloud
 matplotlib
-collections
 plotly
 scikit-learn
 bertopic
-re
-io
 vaderSentiment
 networkx
-itertools
 openpyxl
+xlrd
+xlsxwriter
+python-dateutil
