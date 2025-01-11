@@ -75,15 +75,19 @@ def load_excel_file(file):
     Returns:
     - question_mapping: DataFrame for question_mapping sheet
     - responses_dict: Dictionary of DataFrames for other sheets
-    - open_var_options: Dictionary of *_open/*_na variables with questions
+    - open_var_options: Dictionary of *open/*na variables with questions
     - grouping_columns: Set of unique column names across sheets
     """
     try:
         # Load the Excel file
         excel_file = pd.ExcelFile(file)
+
+        # Create debug expander first to capture all debug information
+        debug_container = st.expander("Debug Information (Optional)", expanded=False)
         
-        # Debug information
-        st.write("Loading Excel file...")
+        with debug_container:
+            st.write("Loading Excel file...")
+            st.write(f"Available sheets: {excel_file.sheet_names}")
 
         # Validate the presence of question_mapping sheet
         if 'question_mapping' not in excel_file.sheet_names:
@@ -109,12 +113,9 @@ def load_excel_file(file):
             responses_dict[sheet] = df
             grouping_columns.update(df.columns)
             
-            # Find all open-ended variables (ending with _open or _na)
+            # Find all open-ended variables (ending with *open or *na)
             open_vars = [col for col in df.columns if col.endswith('_open') or col.endswith('_na')]
             all_open_vars.update(open_vars)
-
-        # Debug information for open variables
-        st.write("Found open-ended variables:", sorted(all_open_vars))
 
         # Map variables to questions
         open_var_options = {}
@@ -124,6 +125,18 @@ def load_excel_file(file):
                 open_var_options[open_var] = f"{open_var} - {question_row.iloc[0]['question']}"
             else:
                 open_var_options[open_var] = open_var
+
+        # Add all debug information to the expander
+        with debug_container:
+            st.write("\nProcessing Summary:")
+            st.write(f"Response sheets found: {len(response_sheets)}")
+            st.write(f"Open variables found: {len(all_open_vars)}")
+            st.write(f"Questions mapped: {len(open_var_options)}")
+            st.write("\nDetailed Information:")
+            st.write(f"Response sheets: {response_sheets}")
+            st.write(f"Grouping columns: {sorted(grouping_columns)}")
+            st.write(f"Open variables: {sorted(all_open_vars)}")
+            st.write(f"Open variable options: {open_var_options}")
 
         return question_mapping, responses_dict, open_var_options, sorted(grouping_columns)
 
