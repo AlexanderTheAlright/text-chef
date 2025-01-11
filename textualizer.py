@@ -2417,6 +2417,7 @@ if uploaded_file:
                 viz_tabs = st.tabs(["🌟 Sunburst", "📡 Radar", "📊 Distribution"])
 
                 with viz_tabs[0]:
+                    sunburst_fig = create_sentiment_sunburst(sentiment_stats)
                     safe_plotly_chart(sunburst_fig, st, "Unable to display sentiment sunburst chart")
                     if sunburst_fig is not None:
                         try:
