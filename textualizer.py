@@ -126,18 +126,6 @@ def load_excel_file(file):
             else:
                 open_var_options[open_var] = open_var
 
-        # Debug information
-        st.write("Number of response sheets:", len(response_sheets))
-        st.write("Number of open variables found:", len(all_open_vars))
-        st.write("Number of mapped questions:", len(open_var_options))
-
-        with st.expander("Debug Information (Optional)", expanded=False):
-            st.write(f"Available sheets: {excel_file.sheet_names}")
-            st.write(f"Response sheets: {response_sheets}")
-            st.write(f"Grouping columns: {sorted(grouping_columns)}")
-            st.write(f"Open variables: {sorted(all_open_vars)}")
-            st.write(f"Open variable options: {open_var_options}")
-
         return question_mapping, responses_dict, open_var_options, sorted(grouping_columns)
 
     except Exception as e:
