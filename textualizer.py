@@ -70,13 +70,13 @@ grouping_columns = []
 @st.cache_data
 def load_excel_file(file):
     """
-    Load Excel file and extract required data with improved variable detection.
+    Load Excel file and extract required data.
     
     Returns:
     - question_mapping: DataFrame for question_mapping sheet
     - responses_dict: Dictionary of DataFrames for other sheets
-    - open_var_options: Dictionary of *_open/*_na variables with questions (if they exist)
-    - grouping_columns: Set of unique column names across sheets
+    - open_var_options: Dictionary of available _open variables with questions if they exist
+    - grouping_columns: Set of unique non-open column names across sheets
     """
     try:
         # Load the Excel file
@@ -97,36 +97,37 @@ def load_excel_file(file):
             raise ValueError("No response sheets found in the file.")
 
         responses_dict = {}
-        all_open_vars = set()
-        grouping_columns = set()
+        available_open_vars = set()
+        all_columns = set()
 
-        # First pass: collect all open variables from all surveys
+        # First pass: collect actually available open variables and all columns
         for sheet in response_sheets:
             df = pd.read_excel(excel_file, sheet_name=sheet)
             responses_dict[sheet] = df
-            grouping_columns.update(df.columns)
             
-            # Find all open-ended variables including duplicates with .1 suffix
-            open_vars = [col.split('.')[0] for col in df.columns 
-                        if col.split('.')[0].endswith('_open') or 
-                           col.split('.')[0].endswith('_na')]
-            all_open_vars.update(open_vars)
+            # Get base column names (remove .1 suffix)
+            base_columns = {col.split('.')[0] for col in df.columns}
+            
+            # Find available open variables
+            sheet_open_vars = {col for col in base_columns if col.endswith('_open')}
+            available_open_vars.update(sheet_open_vars)
+            
+            # Collect all unique base column names
+            all_columns.update(base_columns)
 
-        # Create mapping of variables to questions where they exist
+        # Remove open variables from grouping columns
+        grouping_columns = {col for col in all_columns 
+                          if not col.endswith('_open') and not col.endswith('.1')}
+
+        # Create mapping of available open variables to questions where they exist
         open_var_options = {}
-        for open_var in sorted(all_open_vars):
-            # Find if there's a matching question for this variable in any survey
-            matching_questions = question_mapping[
-                (question_mapping['variable'] == open_var)
-            ]
-            
-            if not matching_questions.empty:
-                # If there are questions, create a mapping with the survey ID and question
-                for _, row in matching_questions.iterrows():
-                    survey_id = row.get('surveyid', '')
-                    question = row.get('question', '')
-                    if question and survey_id:
-                        open_var_options[open_var] = f"{open_var} - {question}"
+        for open_var in sorted(available_open_vars):
+            # Find if there's a matching question
+            question_row = question_mapping[question_mapping['variable'] == open_var]
+            if not question_row.empty:
+                # If there's a question, use it in the display
+                question = question_row.iloc[0]['question']
+                open_var_options[open_var] = f"{open_var} - {question}"
             else:
                 # If no question exists, just use the variable name
                 open_var_options[open_var] = open_var
@@ -135,12 +136,12 @@ def load_excel_file(file):
         with debug_container:
             st.write("\nProcessing Summary:")
             st.write(f"Surveys processed: {len(response_sheets)}")
-            st.write(f"Total open variables found: {len(all_open_vars)}")
-            st.write(f"Variables with questions mapped: {sum(1 for v in open_var_options.values() if ' - ' in v)}")
+            st.write(f"Open variables found: {len(available_open_vars)}")
+            st.write(f"Grouping columns available: {len(grouping_columns)}")
             st.write("\nDetailed Information:")
             st.write("Survey sheets:", response_sheets)
-            st.write("Open variables found:", sorted(all_open_vars))
-            st.write("Variable mappings:", open_var_options)
+            st.write("Open variables:", sorted(available_open_vars))
+            st.write("Open variable mappings:", open_var_options)
 
         return question_mapping, responses_dict, open_var_options, sorted(grouping_columns)
 
