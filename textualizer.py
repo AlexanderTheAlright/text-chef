@@ -69,43 +69,84 @@ grouping_columns = []
 
 @st.cache_data
 def load_excel_file(file):
+    """
+    Load Excel file and extract required data.
+    
+    Returns:
+    - question_mapping: DataFrame for question_mapping sheet
+    - responses_dict: Dictionary of DataFrames for other sheets
+    - open_var_options: Dictionary of available _open variables with questions if they exist
+    - grouping_columns: Set of unique non-open column names across sheets
+    """
     """Load Excel file and return question mapping and all survey responses"""
     try:
+        # Load the Excel file
         # Get all sheet names
         excel_file = pd.ExcelFile(file)
+        debug_container = st.expander("Debug Information (Optional)", expanded=False)
+        
+        # Validate and load question_mapping sheet
+        if 'question_mapping' not in excel_file.sheet_names:
+            st.error("The file must contain a 'question_mapping' sheet.")
+            raise ValueError("Sheet 'question_mapping' is missing in the file.")
+        
+        question_mapping = pd.read_excel(excel_file, sheet_name='question_mapping')
+        
+        # Load all other sheets (surveys)
+        response_sheets = [sheet for sheet in excel_file.sheet_names if sheet != 'question_mapping']
+        if not response_sheets:
+            st.error("No response sheets found in the file.")
+            raise ValueError("No response sheets found in the file.")
         all_sheets = excel_file.sheet_names
-
         # First sheet is always question_mapping
         question_mapping = pd.read_excel(file, sheet_name='question_mapping')
 
         # All other sheets are surveys
         survey_sheets = [sheet for sheet in all_sheets if sheet != 'question_mapping']
-
         # Load all survey sheets
         responses_dict = {}
-        for sheet in survey_sheets:
-            responses_dict[sheet] = pd.read_excel(
-                file,
-                sheet_name=sheet,
-                na_values=['', '#N/A', 'N/A', 'n/a', '<NA>', 'NULL', 'null', 'None', 'none'],
-                keep_default_na=True
-            )
-
-        # Find all *_open variables in question mapping
-        open_vars = question_mapping[
-            question_mapping['variable'].str.endswith('_open', na=False)
-        ]
-
-        # Create variable display names with questions (showing full question directly)
-        open_var_options = {
-            row['variable']: f"{row['variable']} - {row['question']}"
-            for _, row in open_vars.iterrows()
-        }
-
-        return question_mapping, responses_dict, open_var_options
-    except Exception as e:
-        st.error(f"Error loading file: {e}")
-        return None, None, {}
+        available_open_vars = set()
+        all_columns = set()
+        # First pass: collect actually available open variables and all columns
+        for sheet in response_sheets:
+            df = pd.read_excel(excel_file, sheet_name=sheet)
+            responses_dict[sheet] = df
+            
+            # Get base column names (remove .1 suffix)
+            base_columns = {col.split('.')[0] for col in df.columns}
+            
+            # Find available open variables
+            sheet_open_vars = {col for col in base_columns if col.endswith('_open')}
+            available_open_vars.update(sheet_open_vars)
+            
+            # Collect all unique base column names
+            all_columns.update(base_columns)
+        # Remove open variables from grouping columns
+        grouping_columns = {col for col in all_columns 
+                          if not col.endswith('_open') and not col.endswith('.1')}
+        # Create mapping of available open variables to questions where they exist
+        open_var_options = {}
+        for open_var in sorted(available_open_vars):
+            # Find if there's a matching question
+            question_row = question_mapping[question_mapping['variable'] == open_var]
+            if not question_row.empty:
+                # If there's a question, use it in the display
+                question = question_row.iloc[0]['question']
+                open_var_options[open_var] = f"{open_var} - {question}"
+            else:
+                # If no question exists, just use the variable name
+                open_var_options[open_var] = open_var
+        # Add debug information
+        with debug_container:
+            st.write("\nProcessing Summary:")
+            st.write(f"Surveys processed: {len(response_sheets)}")
+            st.write(f"Open variables found: {len(available_open_vars)}")
+            st.write(f"Grouping columns available: {len(grouping_columns)}")
+            st.write("\nDetailed Information:")
+            st.write("Survey sheets:", response_sheets)
+            st.write("Open variables:", sorted(available_open_vars))
+            st.write("Open variable mappings:", open_var_options)
+        return question_mapping, responses_dict, open_var_options, sorted(grouping_columns)
 
 def get_standard_samples(texts_by_group, n_samples=5, seed=None):
     """
