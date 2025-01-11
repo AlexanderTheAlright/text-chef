@@ -37,6 +37,9 @@ if 'custom_stopwords' not in st.session_state:
     except FileNotFoundError:
         st.session_state.custom_stopwords = set(list(STOPWORDS))
 
+if 'preview_stopwords' not in st.session_state:
+    st.session_state.preview_stopwords = st.session_state.custom_stopwords.copy()
+
 
 @st.cache_data
 def load_excel_file(file):
@@ -1674,9 +1677,6 @@ with st.sidebar:
 
             # Add synonym management
             add_synonym_management_to_sidebar()
-
-            if 'preview_stopwords' not in st.session_state:
-                st.session_state.preview_stopwords = st.session_state.custom_stopwords.copy()
 
             with st.sidebar.expander("⚙️ Stopwords Management"):
                 # Preview text area
