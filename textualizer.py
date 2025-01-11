@@ -2484,10 +2484,19 @@ if uploaded_file:
                     })
 
                 stats_df = pd.DataFrame(stats_data)
-                st.dataframe(
-                    stats_df.style.background_gradient(subset=['Average Sentiment'], cmap='RdYlGn'),
-                    use_container_width=True
-                )
+                
+                # Only apply styling if the dataframe has data and the required column exists
+                if not stats_df.empty and 'Average Sentiment' in stats_df.columns:
+                    styled_df = stats_df.style.background_gradient(
+                        subset=['Average Sentiment'],
+                        cmap='RdYlGn',
+                        vmin=-1,
+                        vmax=1
+                    )
+                    st.dataframe(styled_df, use_container_width=True)
+                else:
+                    # Fallback to displaying the plain dataframe
+                    st.dataframe(stats_df, use_container_width=True)
 
         # Theme Evolution Tab
         with tabs[4]:
