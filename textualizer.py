@@ -102,13 +102,6 @@ def load_excel_file(file):
             for _, row in open_vars.iterrows()
         }
 
-        # Debug info
-        with st.expander("Debug Information", expanded=False):
-            st.write(f"Loaded {len(survey_sheets)} survey sheets: {survey_sheets}")
-            st.write(f"Found {len(open_var_options)} *_open variables")
-            for sheet, df in responses_dict.items():
-                st.write(f"Sheet {sheet}: {len(df)} rows")
-
         return question_mapping, responses_dict, open_var_options
     except Exception as e:
         st.error(f"Error loading file: {e}")
