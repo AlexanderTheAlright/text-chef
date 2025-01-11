@@ -1771,14 +1771,6 @@ with st.sidebar:
 
                 st.markdown("---")
 
-                # Permanent stopwords text area
-                permanent_stopwords = st.text_area(
-                    "Edit permanent stopwords",
-                    value="\n".join(sorted(st.session_state.custom_stopwords)),
-                    key="permanent_stopwords",
-                    height=100
-                )
-
 if uploaded_file:
     if question_mapping is not None and responses_dict is not None and open_var_options and variable:
         # Show response counts by survey/group
