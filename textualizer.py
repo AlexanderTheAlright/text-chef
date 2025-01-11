@@ -58,61 +58,52 @@ if 'sample_seed' not in st.session_state:
 if 'uploaded_file_processed' not in st.session_state:
     st.session_state.uploaded_file_processed = False  # Track file processing status
 
+if 'grouping_options' not in st.session_state:
+    st.session_state.grouping_options = []  # Store unique columns for grouping options
+
+if 'var_open_columns' not in st.session_state:
+    st.session_state.var_open_columns = {}  # Store *_open columns from all sheets
+
+
+# Function to load all unique grouping columns and *_open columns
 @st.cache_data
-def load_excel_file(file):
-    """Load Excel file and return question mapping and all survey responses"""
+def load_grouping_and_var_open_columns(file_path):
+    """
+    Load unique grouping columns and *_open columns from the Excel file.
+
+    Parameters:
+    - file_path: Path to the uploaded Excel file.
+
+    Returns:
+    - grouping_options: List of unique column names for grouping.
+    - var_open_columns: Dictionary with sheet names as keys and list of *_open columns as values.
+    """
     try:
-        # Load Excel file
-        excel_file = pd.ExcelFile(file)
+        # Load the Excel file
+        excel_file = pd.ExcelFile(file_path)
+
+        # Ensure the first sheet is 'question_mapping' and skip it
         all_sheets = excel_file.sheet_names
+        sheets_to_process = [sheet for sheet in all_sheets if sheet != 'question_mapping']
 
-        # Load question_mapping sheet
-        if 'question_mapping' in all_sheets:
-            question_mapping = pd.read_excel(file, sheet_name='question_mapping')
-        else:
-            st.error("'question_mapping' sheet not found in the uploaded file.")
-            return None, None, {}
+        grouping_columns = set()
+        var_open_columns = {}
 
-        # Load all survey response sheets
-        survey_sheets = [sheet for sheet in all_sheets if sheet != 'question_mapping']
-        responses_dict = {
-            sheet: pd.read_excel(
-                file,
-                sheet_name=sheet,
-                na_values=['', '#N/A', 'N/A', 'n/a', '<NA>', 'NULL', 'null', 'None', 'none'],
-                keep_default_na=True
-            )
-            for sheet in survey_sheets
-        }
+        for sheet_name in sheets_to_process:
+            df = pd.read_excel(excel_file, sheet_name=sheet_name)
 
-        # Identify *_open variables in all sheets
-        all_open_vars = set()
-        for df in responses_dict.values():
-            all_open_vars.update(col for col in df.columns if col.endswith('_open'))
+            # Collect grouping options (all column names)
+            grouping_columns.update(df.columns)
 
-        # Map *_open variables to their questions
-        open_vars = question_mapping[
-            question_mapping['variable'].isin(all_open_vars)
-        ]
+            # Collect *_open columns
+            open_columns = [col for col in df.columns if col.endswith('_open')]
+            if open_columns:
+                var_open_columns[sheet_name] = open_columns
 
-        # Prepare display options for variables
-        open_var_options = {
-            row['variable']: f"{row['variable']} - {row['question']}"
-            for _, row in open_vars.iterrows()
-        }
-
-        # Debug Information
-        with st.expander("Debug Information", expanded=False):
-            st.write(f"Loaded {len(survey_sheets)} survey sheets: {survey_sheets}")
-            st.write(f"Found {len(all_open_vars)} *_open variables: {sorted(all_open_vars)}")
-            st.write(f"Mapped to {len(open_var_options)} questions.")
-            for sheet, df in responses_dict.items():
-                st.write(f"Sheet '{sheet}': {len(df)} rows, {len(df.columns)} columns")
-
-        return question_mapping, responses_dict, open_var_options
+        return sorted(grouping_columns), var_open_columns
     except Exception as e:
-        st.error(f"Error loading file: {e}")
-        return None, None, {}
+        st.error(f"Error processing file: {e}")
+        return [], {}
 
 def get_standard_samples(texts_by_group, n_samples=5, seed=None):
     """
