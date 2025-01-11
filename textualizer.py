@@ -495,45 +495,26 @@ def process_text(text, stopwords=None, synonyms=None):
         return
 
 def get_responses_for_variable(dfs_dict, var, group_by=None):
-    """Get responses for a variable across all surveys with improved error handling and debugging"""
+    """Get responses for a variable across all surveys"""
     responses_by_survey = {}
 
-    # Get current stopwords from session state
-    current_stopwords = st.session_state.get('preview_stopwords',
-                                           st.session_state.get('custom_stopwords', set()))
-
     for survey_id, df in dfs_dict.items():
-        st.write(f"\nProcessing survey: {survey_id}")
-        st.write(f"Available columns: {df.columns.tolist()}")
-        
         # Find matching columns for this variable
         var_pattern = f"^{re.escape(var)}(?:\.1)?$"
         matching_cols = [col for col in df.columns if re.match(var_pattern, col, re.IGNORECASE)]
-        st.write(f"Matching columns found: {matching_cols}")
-
+        
         if not matching_cols:
-            st.warning(f"No matching columns found for variable {var} in survey {survey_id}")
-            continue
+            continue  # Skip if variable not in this survey
 
         if group_by and group_by in df.columns:
-            # Group responses by the specified variable
             grouped_responses = defaultdict(list)
 
             for col in matching_cols:
                 temp_df = df[[col, group_by]].copy()
-                
-                # Show some stats about the data
-                st.write(f"Column {col} stats:")
-                st.write(f"- Total rows: {len(temp_df)}")
-                st.write(f"- Non-null values: {temp_df[col].count()}")
-                
-                # Convert all values to string and handle NaN/None values
                 temp_df[col] = temp_df[col].astype(str)
-                # Remove 'nan' strings and empty strings
                 temp_df[col] = temp_df[col].replace({'nan': '', 'None': '', 'NaN': ''})
 
                 for group_val, group_df in temp_df.groupby(group_by):
-                    # Only include non-empty responses
                     responses = [
                         resp for resp in group_df[col].tolist() 
                         if isinstance(resp, str) and resp.strip() and 
@@ -553,21 +534,13 @@ def get_responses_for_variable(dfs_dict, var, group_by=None):
                         unique_responses.append(resp_clean)
                 if unique_responses:
                     responses_by_survey[f"{survey_id}_{group_val}"] = unique_responses
-                    st.write(f"Added {len(unique_responses)} responses for group {group_val}")
         else:
-            # Original ungrouped logic with improved error handling
+            # Original ungrouped logic
             responses = []
             for col in matching_cols:
                 series = df[col].astype(str)
-                # Remove 'nan' strings and empty strings
                 series = series.replace({'nan': '', 'None': '', 'NaN': ''})
                 
-                # Show some stats about the data
-                st.write(f"Processing column {col}:")
-                st.write(f"- Total values: {len(series)}")
-                st.write(f"- Non-empty values: {(series != '').sum()}")
-
-                # Only include non-empty responses
                 valid_responses = [
                     resp for resp in series.tolist() 
                     if isinstance(resp, str) and resp.strip() and 
@@ -586,13 +559,6 @@ def get_responses_for_variable(dfs_dict, var, group_by=None):
 
             if unique_responses:
                 responses_by_survey[survey_id] = unique_responses
-                st.write(f"Added {len(unique_responses)} responses for survey {survey_id}")
-            else:
-                st.warning(f"No valid responses found for survey {survey_id}")
-
-    st.write("\nFinal response counts:")
-    for survey_id, responses in responses_by_survey.items():
-        st.write(f"{survey_id}: {len(responses)} responses")
 
     return responses_by_survey
 
