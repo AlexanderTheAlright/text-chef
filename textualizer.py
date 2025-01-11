@@ -2441,6 +2441,7 @@ if uploaded_file:
                         create_sentiment_radar(sentiment_stats), 
                         st, 
                         "Unable to display sentiment radar chart"
+                    )
 
                     st.markdown("""
                                 **Understanding the Radar Chart:**
