@@ -2629,49 +2629,64 @@ if uploaded_file:
                     st.error(f"Error analyzing themes: {str(e)}")
                     st.info("Try adjusting the analysis settings or check your data format.")
 
-# Sample Responses Section
+        # Sample Responses Section
         st.markdown("---")
         st.markdown("## Response Examples")
-
-        # Organize responses using the already loaded responses_by_survey
+        
+        # Organize responses by group
+        texts_by_group = {}
+        
         if group_by:
             # With grouping
-            texts_by_group = {}
-            for survey_responses in responses_by_survey.values():
-                # Since the responses are already filtered and processed in responses_by_survey,
-                # we just need to split them by group
-                group = survey_responses[0].split('_')[1] if '_' in survey_responses[0] else 'All'
-                if group not in texts_by_group:
-                    texts_by_group[group] = []
-                texts_by_group[group].extend(survey_responses)
+            for df in responses_dict.values():
+                if group_by in df.columns and variable in df.columns:
+                    # Get groups and their responses
+                    for group_val in df[group_by].unique():
+                        if pd.isna(group_val):
+                            group_key = 'No Group'
+                        else:
+                            group_key = str(group_val)
+                        
+                        # Get responses for this group
+                        group_responses = df[df[group_by] == group_val][variable].dropna().tolist()
+                        
+                        # Filter valid responses
+                        valid_responses = [
+                            str(resp) for resp in group_responses 
+                            if pd.notna(resp) and str(resp).strip() and 
+                            str(resp).lower() not in {'nan', 'none', 'n/a', 'na'}
+                        ]
+                        
+                        if valid_responses:
+                            if group_key not in texts_by_group:
+                                texts_by_group[group_key] = []
+                            texts_by_group[group_key].extend(valid_responses)
         else:
             # Without grouping, combine all responses under a single key
-            texts_by_group = {'All Responses': []}
-            for responses in responses_by_survey.values():
-                texts_by_group['All Responses'].extend(responses)
-
+            texts_by_group['All'] = []
+            for df in responses_dict.values():
+                if variable in df.columns:
+                    responses = df[variable].dropna().tolist()
+                    valid_responses = [
+                        str(resp) for resp in responses 
+                        if pd.notna(resp) and str(resp).strip() and 
+                        str(resp).lower() not in {'nan', 'none', 'n/a', 'na'}
+                    ]
+                    texts_by_group['All'].extend(valid_responses)
+        
+        # Remove duplicates while preserving order
+        for group in texts_by_group:
+            seen = set()
+            unique_responses = []
+            for resp in texts_by_group[group]:
+                if resp not in seen:
+                    seen.add(resp)
+                    unique_responses.append(resp)
+            texts_by_group[group] = unique_responses
+        
         # If there's a search word, display matching responses
         if search_word:
-            st.subheader(f"Responses containing '{search_word}'")
-            matching_responses = find_word_in_responses(texts_by_group, search_word)
-
-            if matching_responses:
-                total_matches = sum(len(responses) for responses in matching_responses.values())
-                st.metric("Total Matching Responses", total_matches)
-
-                for group, responses in matching_responses.items():
-                    if responses:
-                        # Display up to 5 sample responses for each group
-                        st.markdown(f"#### {group} ({len(responses)} matches)")
-                        samples = responses[:5]
-                        for i, response in enumerate(samples, 1):
-                            with st.expander(f"Response {i}", expanded=True):
-                                # Highlight the search word
-                                pattern = re.compile(f"({re.escape(search_word)})", re.IGNORECASE)
-                                highlighted_text = pattern.sub(r"**:red[\1]**", response)
-                                st.markdown(highlighted_text)
-            else:
-                st.warning(f"No responses found containing '{search_word}'.")
+            display_word_search_results(texts_by_group, search_word)
         else:
             # Display random samples when no search word is entered
             if st.button("🔄 Generate New Random Samples"):
