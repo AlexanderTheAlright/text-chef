@@ -32,14 +32,31 @@ st.set_page_config(
 # Initialize session state
 if 'custom_stopwords' not in st.session_state:
     try:
+        # Attempt to load stopwords from CSV file
         custom_stopwords_df = pd.read_csv('custom_stopwords.csv')
         st.session_state.custom_stopwords = set(custom_stopwords_df['word'].tolist())
-    except FileNotFoundError:
+    except (FileNotFoundError, KeyError):
+        # Fallback to default stopwords if file is not found or invalid
         st.session_state.custom_stopwords = set(list(STOPWORDS))
 
+# Ensure preview stopwords are initialized as a copy of custom_stopwords
 if 'preview_stopwords' not in st.session_state:
     st.session_state.preview_stopwords = st.session_state.custom_stopwords.copy()
 
+# Initialize synonyms mapping as an empty dictionary
+if 'synonyms' not in st.session_state:
+    st.session_state.synonyms = {}
+
+# Initialize synonym groups for advanced functionality
+if 'synonym_groups' not in st.session_state:
+    st.session_state.synonym_groups = defaultdict(set)
+
+# Add initialization for additional session state variables used in the app
+if 'sample_seed' not in st.session_state:
+    st.session_state.sample_seed = None  # For consistent random sampling
+
+if 'uploaded_file_processed' not in st.session_state:
+    st.session_state.uploaded_file_processed = False  # Track file processing status
 
 @st.cache_data
 def load_excel_file(file):
