@@ -1055,66 +1055,79 @@ def analyze_group_sentiment(texts_by_group):
 
 
 def create_sentiment_sunburst(sentiment_stats):
-    """
-    Create a sunburst chart showing sentiment distribution by group.
-    """
-    # Prepare data for sunburst chart
-    labels = []
-    parents = []
-    values = []
-    colors = []
+    """Create a sunburst chart showing sentiment distribution by group."""
+    if not sentiment_stats:
+        return None
+        
+    try:
+        # Prepare data for sunburst chart
+        labels = []
+        parents = []
+        values = []
+        colors = []
 
-    # Color scheme
-    color_map = {
-        'Positive': '#2ecc71',
-        'Neutral': '#f1c40f',
-        'Negative': '#e74c3c'
-    }
+        # Color scheme
+        color_map = {
+            'Positive': '#2ecc71',
+            'Neutral': '#f1c40f',
+            'Negative': '#e74c3c'
+        }
 
-    # Add root
-    labels.append('All Responses')
-    parents.append('')
-    values.append(sum(stats['total'] for stats in sentiment_stats.values()))
-    colors.append('#3498db')
-
-    # Add groups and their sentiments
-    for group, stats in sentiment_stats.items():
-        # Add group
-        labels.append(str(group))
-        parents.append('All Responses')
-        values.append(stats['total'])
+        # Add root
+        total_responses = sum(stats['total'] for stats in sentiment_stats.values())
+        if total_responses == 0:
+            return None
+            
+        labels.append('All Responses')
+        parents.append('')
+        values.append(total_responses)
         colors.append('#3498db')
 
-        # Add sentiments for this group
-        for sentiment in ['Positive', 'Neutral', 'Negative']:
-            labels.append(f'{group} {sentiment}')
-            parents.append(str(group))
-            values.append(stats[sentiment.lower()])
-            colors.append(color_map[sentiment])
+        # Add groups and their sentiments
+        for group, stats in sentiment_stats.items():
+            if stats['total'] > 0:  # Only add groups with responses
+                # Add group
+                labels.append(str(group))
+                parents.append('All Responses')
+                values.append(stats['total'])
+                colors.append('#3498db')
 
-    fig = go.Figure(go.Sunburst(
-        labels=labels,
-        parents=parents,
-        values=values,
-        branchvalues='total',
-        marker=dict(colors=colors),
-        hovertemplate='<b>%{label}</b><br>Responses: %{value}<br>Percentage: %{percentParent:.1f}%<extra></extra>'
-    ))
+                # Add sentiments for this group
+                for sentiment in ['Positive', 'Neutral', 'Negative']:
+                    labels.append(f'{group} {sentiment}')
+                    parents.append(str(group))
+                    values.append(stats[sentiment.lower()])
+                    colors.append(color_map[sentiment])
 
-    fig.update_layout(
-        width=800,
-        height=800,
-        title={
-            'text': 'Sentiment Distribution by Group',
-            'y': 0.95,
-            'x': 0.5,
-            'xanchor': 'center',
-            'yanchor': 'top',
-            'font': {'size': 24}
-        }
-    )
+        if len(labels) <= 1:  # Check if we have enough data
+            return None
 
-    return fig
+        fig = go.Figure(go.Sunburst(
+            labels=labels,
+            parents=parents,
+            values=values,
+            branchvalues='total',
+            marker=dict(colors=colors),
+            hovertemplate='<b>%{label}</b><br>Responses: %{value}<br>Percentage: %{percentParent:.1f}%<extra></extra>'
+        ))
+
+        fig.update_layout(
+            width=800,
+            height=800,
+            title={
+                'text': 'Sentiment Distribution by Group',
+                'y': 0.95,
+                'x': 0.5,
+                'xanchor': 'center',
+                'yanchor': 'top',
+                'font': {'size': 24}
+            }
+        )
+
+        return fig
+    except Exception as e:
+        print(f"Error creating sunburst chart: {str(e)}")
+        return None
 
 def create_sentiment_radar(sentiment_stats):
     """
