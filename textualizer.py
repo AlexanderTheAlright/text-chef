@@ -84,7 +84,6 @@ def load_excel_file(file):
         
         # Debug information
         st.write("Loading Excel file...")
-        st.write(f"Available sheets: {excel_file.sheet_names}")
 
         # Validate the presence of question_mapping sheet
         if 'question_mapping' not in excel_file.sheet_names:
