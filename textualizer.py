@@ -67,6 +67,87 @@ if 'var_open_columns' not in st.session_state:
 
 # Function to load all unique grouping columns and *_open columns
 @st.cache_data
+@st.cache_data
+def load_excel_file(file):
+    """
+    Load Excel file and return question mapping and all survey responses.
+
+    Parameters:
+    - file: Uploaded file object.
+
+    Returns:
+    - question_mapping: DataFrame for question_mapping sheet.
+    - responses_dict: Dictionary with sheet names (excluding question_mapping) as keys and DataFrames as values.
+    - open_var_options: Dictionary mapping *_open variables to their questions.
+    """
+    try:
+        # Load the Excel file
+        excel_file = pd.ExcelFile(file)
+
+        # Check for sheets
+        all_sheets = excel_file.sheet_names
+        if not all_sheets:
+            st.error("The uploaded Excel file has no sheets.")
+            return None, None, {}
+
+        # Load the first sheet as question_mapping
+        if 'question_mapping' in all_sheets:
+            question_mapping = pd.read_excel(excel_file, sheet_name='question_mapping')
+        else:
+            st.error("'question_mapping' sheet not found in the uploaded file.")
+            return None, None, {}
+
+        # Load all other sheets as survey responses
+        survey_sheets = [sheet for sheet in all_sheets if sheet != 'question_mapping']
+        if not survey_sheets:
+            st.error("No survey response sheets found in the uploaded file.")
+            return None, None, {}
+
+        responses_dict = {}
+        for sheet in survey_sheets:
+            try:
+                df = pd.read_excel(
+                    excel_file,
+                    sheet_name=sheet,
+                    na_values=['', '#N/A', 'N/A', 'n/a', '<NA>', 'NULL', 'null', 'None', 'none'],
+                    keep_default_na=True
+                )
+                responses_dict[sheet] = df
+            except Exception as e:
+                st.warning(f"Error loading sheet '{sheet}': {e}")
+
+        # Identify *_open variables in all sheets
+        all_open_vars = set()
+        for df in responses_dict.values():
+            all_open_vars.update(col for col in df.columns if col.endswith('_open'))
+
+        # Map *_open variables to their questions
+        open_var_options = {}
+        if 'variable' in question_mapping.columns and 'question' in question_mapping.columns:
+            open_vars = question_mapping[
+                question_mapping['variable'].isin(all_open_vars)
+            ]
+            open_var_options = {
+                row['variable']: f"{row['variable']} - {row['question']}"
+                for _, row in open_vars.iterrows()
+            }
+        else:
+            st.warning("'question_mapping' sheet must contain 'variable' and 'question' columns.")
+
+        # Debugging and verification
+        with st.expander("Debug Information", expanded=False):
+            st.write(f"Loaded {len(survey_sheets)} survey sheets: {survey_sheets}")
+            st.write(f"Found {len(all_open_vars)} *_open variables: {sorted(all_open_vars)}")
+            st.write(f"Mapped to {len(open_var_options)} questions.")
+            for sheet, df in responses_dict.items():
+                st.write(f"Sheet '{sheet}': {len(df)} rows, {len(df.columns)} columns")
+
+        return question_mapping, responses_dict, open_var_options
+
+    except Exception as e:
+        st.error(f"Error loading the Excel file: {e}")
+        return None, None, {}
+
 def load_grouping_and_var_open_columns(file_path):
     """
     Load unique grouping columns and *_open columns from the Excel file.
