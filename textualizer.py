@@ -130,7 +130,7 @@ def load_excel_file(file):
             st.write(f"Open variables: {sorted(all_open_vars)}")
             st.write(f"Open variable options: {open_var_options}")
 
-        return question_mapping, responses_dict, open_var_options
+        return question_mapping, responses_dict, open_var_options, sorted(grouping_columns)
 
     except Exception as e:
         st.error(f"An error occurred while processing the file: {e}")
