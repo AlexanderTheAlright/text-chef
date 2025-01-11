@@ -457,42 +457,49 @@ def get_text_columns(responses_df, question_mapping, survey_id):
 def process_text(text, stopwords=None, synonyms=None):
     """
     Clean and process text with improved stopword handling and synonym support
-
-    Parameters:
-    - text: str - Input text to process
-    - stopwords: set - Set of stopwords to remove
-    - synonyms: dict - Dictionary of synonym mappings
-
-    Returns:
-    - str: Processed text
     """
+    # Debug print to see what text is being received
+    print(f"Input text: {text[:100]}...")  # First 100 chars
+
     if pd.isna(text) or not isinstance(text, (str, bytes)):
+        print(f"Rejected - Invalid type or NaN: {type(text)}")
         return ""
 
     # Convert to string and lowercase
     text = str(text).lower().strip()
     
-    # Check for invalid responses
+    # Print the text after initial cleaning
+    print(f"After initial cleaning: {text[:100]}...")
+    
+    # Check for invalid responses - print if found
     invalid_responses = {'dk', 'dk.', 'd/k', 'd.k.', 'dont know', "don't know", 
                         'na', 'n/a', 'n.a.', 'n/a.', 'not applicable',
                         'none', 'nil', 'no response', 'no answer', '.', '-', 'x'}
     
     if text in invalid_responses:
+        print(f"Rejected - Invalid response: {text}")
         return ""
-        
+
     # Remove HTML tags and clean text
     text = re.sub(r'<[^>]+>', '', text)
+    text = re.sub(r'[^\w\s]', ' ', text)  # Replace punctuation with spaces
+    text = re.sub(r'\s+', ' ', text).strip()  # Normalize whitespace
+    
+    # Print text after cleaning
+    print(f"After cleaning: {text[:100]}...")
 
-    # Split into words
+    # Split into words and apply stopwords/synonyms
     words = text.split()
+    if stopwords:
+        words = [word for word in words if word not in stopwords]
+    
+    if synonyms:
+        words = [synonyms.get(word, word) for word in words]
 
-    # Remove punctuation and filter empty strings
-    words = [re.sub(r'[^\w\s]', '', word).strip() for word in words]
-    words = [word for word in words if word]
-
-    # Additional check for single-word invalid responses
-    if len(words) == 1 and words[0] in invalid_responses:
-        return
+    result = ' '.join(words)
+    print(f"Final processed text: {result[:100]}...")
+    
+    return result
 
 def get_responses_for_variable(dfs_dict, var, group_by=None):
     """Get responses for a variable across all surveys"""
