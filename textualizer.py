@@ -2405,12 +2405,12 @@ if uploaded_file:
                 viz_tabs = st.tabs(["🌟 Sunburst", "📡 Radar", "📊 Distribution"])
 
                 with viz_tabs[0]:
-                    st.plotly_chart(
-                        create_sentiment_sunburst(sentiment_stats),
-                        use_container_width=True
-                    )
-
-                    st.markdown("""
+                    sunburst_fig = create_sentiment_sunburst(sentiment_stats)
+                    if sunburst_fig is not None:
+                        try:
+                            st.plotly_chart(sunburst_fig, use_container_width=True)
+                            
+                            st.markdown("""
                                 **Understanding the Sunburst Chart:**
                                 - Inner circle shows total responses per group
                                 - Outer ring shows sentiment distribution
@@ -2419,6 +2419,10 @@ if uploaded_file:
                                 - 🔴 Red = Negative
                                 - Hover for detailed percentages
                                 """)
+                        except Exception as e:
+                            st.warning("Unable to display sentiment visualization due to insufficient data")
+                    else:
+                        st.warning("Not enough data to generate sentiment visualization")
 
                 with viz_tabs[1]:
                     st.plotly_chart(
