@@ -1162,48 +1162,130 @@ def create_sentiment_radar(sentiment_stats):
     return fig
 
 def create_sentiment_distribution(sentiment_stats):
-    """
-    Create a violin plot showing sentiment score distribution by group.
-    """
-    # Prepare data for violin plot
-    data = []
-    for group, stats in sentiment_stats.items():
-        for score in stats['scores']:
-            data.append({
-                'Group': str(group),
-                'Sentiment Score': score
-            })
+    """Create a violin plot showing sentiment score distribution by group with graceful error handling"""
+    if not sentiment_stats:
+        return None
+        
+    try:
+        # Prepare data for violin plot
+        data = []
+        for group, stats in sentiment_stats.items():
+            if 'scores' in stats and stats['scores']:
+                for score in stats['scores']:
+                    data.append({
+                        'Group': str(group),
+                        'Sentiment Score': float(score)
+                    })
+        
+        if not data:
+            return None
+            
+        df = pd.DataFrame(data)
+        
+        try:
+            fig = px.violin(
+                df,
+                x='Group',
+                y='Sentiment Score',
+                box=True,
+                points="outliers",
+                title='Sentiment Score Distribution by Group',
+                template='plotly_white'
+            )
 
-    df = pd.DataFrame(data)
+            fig.update_layout(
+                showlegend=False,
+                title={
+                    'y': 0.95,
+                    'x': 0.5,
+                    'xanchor': 'center',
+                    'yanchor': 'top',
+                    'font': {'size': 24}
+                },
+                yaxis_title='Sentiment Score (Negative → Positive)',
+                xaxis_title='Group',
+                width=800,
+                height=600
+            )
 
-    fig = px.violin(
-        df,
-        x='Group',
-        y='Sentiment Score',
-        box=True,
-        points="outliers",
-        color='Group',
-        title='Sentiment Score Distribution by Group',
-        template='plotly_white'
-    )
+            return fig
+            
+        except Exception as e:
+            import logging
+            logging.error(f"Error creating violin plot: {str(e)}")
+            return None
+            
+    except Exception as e:
+        import logging
+        logging.error(f"Error processing sentiment data: {str(e)}")
+        return None
 
-    fig.update_layout(
-        showlegend=False,
-        title={
-            'y': 0.95,
-            'x': 0.5,
-            'xanchor': 'center',
-            'yanchor': 'top',
-            'font': {'size': 24}
-        },
-        yaxis_title='Sentiment Score (Negative → Positive)',
-        xaxis_title='Group',
-        width=800,
-        height=600
-    )
+# In the main app, modify the sentiment visualization section:
+with tabs[3]:
+    try:
+        if sentiment_stats:
+            # Create the visualization
+            sentiment_dist_fig = create_sentiment_distribution(sentiment_stats)
+            if sentiment_dist_fig:
+                st.plotly_chart(sentiment_dist_fig, use_container_width=True)
+            else:
+                st.info("Not enough data to generate sentiment distribution visualization.")
+    except Exception as e:
+        import logging
+        logging.error(f"Error in sentiment visualization: {str(e)}")
+        st.info("Unable to generate sentiment distribution visualization at this time.")
 
-    return fig
+def analyze_group_sentiment(texts_by_group):
+    """Analyze sentiment for each group's texts with improved error handling"""
+    try:
+        sentiment_stats = defaultdict(lambda: {
+            'total': 0,
+            'positive': 0,
+            'negative': 0,
+            'neutral': 0,
+            'avg_compound': 0,
+            'scores': []
+        })
 
+        analyzer = SentimentIntensityAnalyzer()
+
+        for group, texts in texts_by_group.items():
+            valid_texts = [str(text) for text in texts if pd.notna(text) and str(text).strip()]
+            
+            if not valid_texts:
+                continue
+                
+            for text in valid_texts:
+                try:
+                    scores = analyzer.polarity_scores(text)
+                    sentiment_stats[group]['total'] += 1
+                    sentiment_stats[group]['scores'].append(scores['compound'])
+
+                    if scores['compound'] >= 0.05:
+                        sentiment_stats[group]['positive'] += 1
+                    elif scores['compound'] <= -0.05:
+                        sentiment_stats[group]['negative'] += 1
+                    else:
+                        sentiment_stats[group]['neutral'] += 1
+                except Exception as e:
+                    import logging
+                    logging.error(f"Error analyzing individual text: {str(e)}")
+                    continue
+
+            # Calculate averages and percentages
+            total = sentiment_stats[group]['total']
+            if total > 0:
+                sentiment_stats[group]['avg_compound'] = sum(sentiment_stats[group]['scores']) / total
+                sentiment_stats[group]['pos_pct'] = (sentiment_stats[group]['positive'] / total) * 100
+                sentiment_stats[group]['neg_pct'] = (sentiment_stats[group]['negative'] / total) * 100
+                sentiment_stats[group]['neu_pct'] = (sentiment_stats[group]['neutral'] / total) * 100
+
+        return dict(sentiment_stats)  # Convert defaultdict to regular dict
+
+    except Exception as e:
+        import logging
+        logging.error(f"Error in sentiment analysis: {str(e)}")
+        return {}
 
 def calculate_theme_evolution(texts_by_group, num_themes=5, min_freq=3):
     """Calculate the evolution of themes across groups."""
