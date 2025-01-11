@@ -396,66 +396,6 @@ def apply_stopwords_to_texts(texts, stopwords):
             processed_texts.append(processed)
     return processed_texts
 
-
-# Add this function for synonym group visualization
-def generate_synonym_group_wordclouds(texts, stopwords=None, synonym_groups=None, colormap='viridis'):
-    """Generate separate wordclouds for each synonym group"""
-    if not texts or not synonym_groups:
-        return None
-
-    # Create figure with subplots
-    n_groups = len(synonym_groups)
-    if n_groups == 0:
-        return None
-
-    rows = int(np.ceil(np.sqrt(n_groups)))
-    cols = int(np.ceil(n_groups / rows))
-
-    fig, axes = plt.subplots(rows, cols, figsize=(16, 16))
-    axes = axes.flatten() if hasattr(axes, 'flatten') else [axes]
-
-    for idx, (group_name, synonyms) in enumerate(synonym_groups.items()):
-        if idx >= len(axes):
-            break
-
-        # Process texts for this group
-        processed_texts = []
-        for text in texts:
-            processed = process_text(text, stopwords, {group_name: synonyms})
-            if processed:
-                processed_texts.append(processed)
-
-        if processed_texts:
-            try:
-                wc = WordCloud(
-                    width=800,
-                    height=400,
-                    background_color='white',
-                    colormap=colormap,
-                    stopwords=stopwords if stopwords else set(),
-                    collocations=False,
-                    min_word_length=2
-                ).generate(' '.join(processed_texts))
-
-                axes[idx].imshow(wc)
-                axes[idx].axis('off')
-                axes[idx].set_title(f"Group: {group_name}\nSynonyms: {', '.join(synonyms)}")
-            except Exception:
-                axes[idx].text(0.5, 0.5, 'Error generating wordcloud',
-                               ha='center', va='center')
-                axes[idx].axis('off')
-        else:
-            axes[idx].text(0.5, 0.5, 'No valid text',
-                           ha='center', va='center')
-            axes[idx].axis('off')
-
-    # Turn off any unused subplots
-    for idx in range(len(synonym_groups), len(axes)):
-        axes[idx].axis('off')
-
-    plt.tight_layout()
-    return fig
-
 def display_word_search_results(texts_by_group, search_word):
     """Display all responses containing a specific word."""
     if not search_word:
