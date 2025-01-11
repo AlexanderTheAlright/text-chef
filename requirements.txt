@@ -1,10 +1,15 @@
 streamlit
 pandas
 numpy
-matplotlib
 wordcloud
+matplotlib
+collections
 plotly
 scikit-learn
 bertopic
+re
+io
 vaderSentiment
 networkx
+itertools
+openpyxl
