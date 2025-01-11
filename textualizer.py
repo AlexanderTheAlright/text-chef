@@ -2691,8 +2691,6 @@ if uploaded_file:
     else:
         st.error("No open-ended variables found in the file")
 
-    display_standard_samples(texts_by_group, n_samples=5)
-
         # If there's a search word, display matching responses
         if search_word:
             st.subheader(f"Responses containing '{search_word}'")
