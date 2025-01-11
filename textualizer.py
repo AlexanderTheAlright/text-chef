@@ -1595,7 +1595,7 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Upload Excel file", type=['xlsx'])
 
     if uploaded_file:
-        question_mapping, responses_dict, open_var_options = load_excel_file(uploaded_file)
+        question_mapping, responses_dict, open_var_options, grouping_columns = load_excel_file(uploaded_file)
 
         if question_mapping is not None and responses_dict is not None and open_var_options:
             # Add a separator for clarity
@@ -1624,7 +1624,6 @@ with st.sidebar:
                 options=['None'] + grouping_columns,
                 help="Select any column to group by."
             )
-            group_by = None if group_by == 'None' else group_by
 
 
             # Add a separator before the existing sidebar controls
