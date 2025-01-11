@@ -492,36 +492,30 @@ def process_text(text, stopwords=None, synonyms=None):
     if pd.isna(text) or not isinstance(text, (str, bytes)):
         return ""
 
+    # Convert to string and lowercase
+    text = str(text).lower().strip()
+    
+    # Check for invalid responses
+    invalid_responses = {'dk', 'dk.', 'd/k', 'd.k.', 'dont know', "don't know", 
+                        'na', 'n/a', 'n.a.', 'n/a.', 'not applicable',
+                        'none', 'nil', 'no response', 'no answer', '.', '-', 'x'}
+    
+    if text in invalid_responses:
+        return ""
+        
     # Remove HTML tags and clean text
-    text = re.sub(r'<[^>]+>', '', str(text))
+    text = re.sub(r'<[^>]+>', '', text)
 
-    # Convert to lowercase and split into words
-    words = text.lower().split()
+    # Split into words
+    words = text.split()
 
     # Remove punctuation and filter empty strings
     words = [re.sub(r'[^\w\s]', '', word).strip() for word in words]
     words = [word for word in words if word]
 
-    # Apply stopwords filtering if provided
-    if stopwords:
-        words = [word for word in words if word.lower() not in stopwords]
-
-    # Apply synonym replacement if provided
-    if synonyms:
-        processed_words = []
-        for word in words:
-            replaced = False
-            for group_name, syn_set in synonyms.items():
-                if word in syn_set:
-                    processed_words.append(group_name)
-                    replaced = True
-                    break
-            if not replaced:
-                processed_words.append(word)
-        words = processed_words
-
-    return ' '.join(words)
-
+    # Additional check for single-word invalid responses
+    if len(words) == 1 and words[0] in invalid_responses:
+        return
 
 def get_responses_for_variable(dfs_dict, var, group_by=None):
     """Get responses for a variable across all surveys"""
