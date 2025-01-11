@@ -2688,8 +2688,6 @@ if uploaded_file:
                 st.session_state.sample_seed = int(time.time())
 
             display_standard_samples(texts_by_group, n_samples=5)
-    else:
-        st.error("No open-ended variables found in the file")
 
         # If there's a search word, display matching responses
         if search_word:
