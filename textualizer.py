@@ -2426,7 +2426,7 @@ if uploaded_file:
                 # Create tabs for different visualizations
                 viz_tabs = st.tabs(["📊 Distribution","📡 Radar", "🌟 Sunburst"])
 
-                                with viz_tabs[0]:
+                with viz_tabs[0]:
                     safe_plotly_chart(
                         create_sentiment_distribution(sentiment_stats), 
                         st, 
