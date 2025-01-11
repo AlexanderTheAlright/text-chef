@@ -2634,10 +2634,21 @@ if uploaded_file:
         st.markdown("## Response Examples")
         
         # Organize responses by group
-        texts_by_group = {}
+        texts_by_group = {'All': []}  # Initialize with All group
         
+        # First collect all valid responses
+        for df in responses_dict.values():
+            if variable in df.columns:
+                responses = df[variable].dropna().tolist()
+                valid_responses = [
+                    str(resp) for resp in responses 
+                    if pd.notna(resp) and str(resp).strip() and 
+                    str(resp).lower() not in {'nan', 'none', 'n/a', 'na'}
+                ]
+                texts_by_group['All'].extend(valid_responses)
+        
+        # Then handle grouping if specified
         if group_by:
-            # With grouping
             for df in responses_dict.values():
                 if group_by in df.columns and variable in df.columns:
                     # Get groups and their responses
@@ -2661,18 +2672,6 @@ if uploaded_file:
                             if group_key not in texts_by_group:
                                 texts_by_group[group_key] = []
                             texts_by_group[group_key].extend(valid_responses)
-        else:
-            # Without grouping, combine all responses under a single key
-            texts_by_group['All'] = []
-            for df in responses_dict.values():
-                if variable in df.columns:
-                    responses = df[variable].dropna().tolist()
-                    valid_responses = [
-                        str(resp) for resp in responses 
-                        if pd.notna(resp) and str(resp).strip() and 
-                        str(resp).lower() not in {'nan', 'none', 'n/a', 'na'}
-                    ]
-                    texts_by_group['All'].extend(valid_responses)
         
         # Remove duplicates while preserving order
         for group in texts_by_group:
@@ -2693,29 +2692,3 @@ if uploaded_file:
                 st.session_state.sample_seed = int(time.time())
             
             display_standard_samples(texts_by_group, n_samples=5)
-
-
-        # If there's a search word, display matching responses
-        if search_word:
-            st.subheader(f"Responses containing '{search_word}'")
-            matching_responses = find_word_in_responses(texts_by_group, search_word)
-
-            if matching_responses:
-                total_matches = sum(len(responses) for responses in matching_responses.values())
-                st.metric("Total Matching Responses", total_matches)
-
-                for group, responses in matching_responses.items():
-                    if responses:
-                        # Display up to 5 sample responses for each group
-                        st.markdown(f"#### {group} ({len(responses)} matches)")
-                        samples = responses[:5]
-                        for i, response in enumerate(samples, 1):
-                            with st.expander(f"Response {i}", expanded=True):
-                                # Highlight the search word
-                                pattern = re.compile(f"({re.escape(search_word)})", re.IGNORECASE)
-                                highlighted_text = pattern.sub(r"**:red[\1]**", response)
-                                st.markdown(highlighted_text)
-            else:
-                st.warning(f"No responses found containing '{search_word}'.")
-    else:
-        st.error("No open-ended variables found in the file")
