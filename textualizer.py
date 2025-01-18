@@ -1,625 +1,492 @@
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+################################################################################
+# STREAMLIT TEXT ANALYSIS APP
+################################################################################
+
+import streamlit as st
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import plotly.express as px
+import plotly.graph_objects as go
+from sklearn.manifold import TSNE
+import networkx as nx
+import os
 import time
 import re
-import networkx as nx
-from itertools import combinations
-import pandas as pd
-import traceback
-import base64
-import streamlit as st
 import nltk
 from nltk.corpus import stopwords
-import os
-from plotly.subplots import make_subplots
-import matplotlib.pyplot as plt
+from collections import Counter, defaultdict
 from wordcloud import WordCloud
-from collections import Counter
+from plotly.subplots import make_subplots
 from io import BytesIO
-import plotly.express as px
-from sklearn.manifold import TSNE
-import plotly.graph_objects as go
+from datetime import datetime
 import logging
+import matplotlib
+from itertools import combinations
 from sklearn.feature_extraction.text import CountVectorizer
 from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
-from collections import defaultdict
-import numpy as np
-import matplotlib
-from datetime import datetime
-matplotlib.use('Agg')
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
-# Set page config
+matplotlib.use('Agg')  # For headless environments
+
 st.set_page_config(
     page_title='Text Analysis Dashboard',
     page_icon='📊',
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-def load_cached_groups():
-    """Load groups from cache file"""
-    try:
-        if os.path.exists('cached_groups.csv'):
-            groups_df = pd.read_csv('cached_groups.csv')
-            return groups_df.to_dict('records')
-    except Exception as e:
-        print(f"Error loading cached groups: {e}")
-    return None
+###############################################################################
+# 1) INITIALIZATION AND CACHING
+###############################################################################
 
-def load_cached_assignments():
-    """Load assignments from cache file"""
-    try:
-        if os.path.exists('cached_assignments.csv'):
-            assignments_df = pd.read_csv('cached_assignments.csv')
-            return dict(zip(assignments_df.text, assignments_df.group))
-    except Exception as e:
-        print(f"Error loading cached assignments: {e}")
-    return None
+@st.cache_resource
+def load_nltk_resources():
+    """Ensure NLTK stopwords are present."""
+    for lang in ['english', 'french']:
+        try:
+            nltk.data.find(f'corpora/stopwords/{lang}')
+        except LookupError:
+            nltk.download('stopwords')
 
+load_nltk_resources()
 
+if 'initialized' not in st.session_state:
+    st.session_state.initialized = True
+    st.session_state.file_processed = False
+    st.session_state.selected_analysis = "Open Coding"  # default
+    st.session_state.synonym_groups = defaultdict(set)
 
-# Initialize synonyms mapping as an empty dictionary
+# Make sure synonyms in
 if 'synonyms' not in st.session_state:
     st.session_state.synonyms = {}
 
-# Initialize synonym groups for advanced functionality
-if 'synonym_groups' not in st.session_state:
-    st.session_state.synonym_groups = defaultdict(set)
+# Make sure custom_stopwords is in session_state
+if 'custom_stopwords' not in st.session_state:
+    st.session_state.custom_stopwords = set()
 
-# Add initialization for additional session state variables used in the app
-if 'sample_seed' not in st.session_state:
-    st.session_state.sample_seed = None  # For consistent random sampling
+# We'll keep open coding groups/assignments in session_state too
+if 'open_coding_groups' not in st.session_state:
+    st.session_state.open_coding_groups = []
+if 'open_coding_assignments' not in st.session_state:
+    st.session_state.open_coding_assignments = {}
+if 'last_save_time' not in st.session_state:
+    st.session_state.last_save_time = time.time()
 
-if 'uploaded_file_processed' not in st.session_state:
-    st.session_state.uploaded_file_processed = False  # Track file processing status
+def auto_save_check():
+    """Auto-save every 5 min."""
+    if (time.time() - st.session_state.last_save_time) > 300:
+        save_coding_state()
 
-if 'grouping_options' not in st.session_state:
-    st.session_state.grouping_options = []  # Store unique columns for grouping options
-
-if 'var_open_columns' not in st.session_state:
-    st.session_state.var_open_columns = {}  # Store *_open columns from all sheets
-
-grouping_columns = []
-
-# Data Loading and Text Processing
-@st.cache_data
-def load_excel_file(file, chosen_survey="All"):
-    """
-    Load only the question_mapping sheet plus either a single chosen survey
-    or all survey sheets (if chosen_survey='All').
-    """
-    try:
-        excel_file = pd.ExcelFile(file)
-        sheets = excel_file.sheet_names
-
-        if 'question_mapping' not in sheets:
-            return None, None, None, None
-
-        question_mapping = pd.read_excel(excel_file, 'question_mapping')
-        if not all(col in question_mapping.columns for col in ['variable', 'question', 'surveyid']):
-            return None, None, None, None
-
-        # Prepare to store the chosen (or all) survey data
-        responses_dict = {}
-        available_open_vars = set()
-        all_columns = set()
-
-        # Exclude 'question_mapping' from surveys
-        valid_sheets = [s for s in sheets if s != 'question_mapping']
-
-        # Figure out which sheets to load
-        if chosen_survey == "All":
-            sheets_to_load = valid_sheets
-        else:
-            # Make sure user’s choice is valid
-            sheets_to_load = [sheet for sheet in valid_sheets if sheet == chosen_survey]
-
-        for sheet in sheets_to_load:
-            df = pd.read_excel(excel_file, sheet_name=sheet)
-            base_columns = {col.split('.')[0] for col in df.columns}
-            all_columns.update(base_columns)
-
-            # Track columns ending in '_open'
-            sheet_open_vars = {col for col in base_columns if col.endswith('_open')}
-            available_open_vars.update(sheet_open_vars)
-
-            # Store this DataFrame
-            responses_dict[sheet] = df
-
-        # Derive grouping columns
-        grouping_columns = sorted(
-            col for col in all_columns
-            if not col.endswith('_open') and not col.endswith('.1')
-        )
-
-        # Build open_var_options mapping
-        open_var_options = {
-            var: f"{var} - {question_mapping[question_mapping['variable'] == var].iloc[0]['question']}"
-            if not question_mapping[question_mapping['variable'] == var].empty
-            else var
-            for var in sorted(available_open_vars)
-        }
-
-        return question_mapping, responses_dict, open_var_options, grouping_columns
-
-    except Exception:
-        return None, None, None, None
-
-
-def apply_stopwords_to_texts(texts, stopwords):
-    """
-    Apply stopwords filtering to a list of texts
-
-    Parameters:
-    - texts: list - List of texts to process
-    - stopwords: set - Set of stopwords to remove
-
-    Returns:
-    - list: Processed texts
-    """
-    processed_texts = []
-    for text in texts:
-        processed = process_text(text, stopwords=stopwords)
-        if processed:  # Only add non-empty processed texts
-            processed_texts.append(processed)
-    return processed_texts
-
-
-def display_word_search_results(texts_by_group, search_word):
-    """Display all responses containing a specific word."""
-    if not search_word:
-        return
-
-    matching_responses = find_word_in_responses(texts_by_group, search_word)
-    total_matches = sum(len(responses) for responses in matching_responses.values())
-
-    # Display summary statistics
-    st.markdown(f"### Responses Containing: '{search_word}'")
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.metric("Total Matching Responses", total_matches)
-
-    with col2:
-        total_responses = sum(len(texts) for texts in texts_by_group.values())
-        match_percentage = (total_matches / total_responses * 100) if total_responses > 0 else 0
-        st.metric("Match Percentage", f"{match_percentage:.1f}%")
-
-    # Display matches by group
-    if matching_responses:
-        for group, responses in matching_responses.items():
-            if responses:  # Only show groups with matches
-                st.markdown(f"#### {group} ({len(responses)} matches)")
-                for i, response in enumerate(responses, 1):
-                    with st.expander(f"Response {i}", expanded=True):
-                        # Highlight the search word
-                        pattern = re.compile(f"({re.escape(search_word)})", re.IGNORECASE)
-                        highlighted_text = pattern.sub(r"**:red[\1]**", response)
-                        st.markdown(highlighted_text)
-    else:
-        st.warning(f"No responses found containing '{search_word}'.")
-
-def get_text_columns(responses_df, question_mapping, survey_id):
-    """Get all text-based columns that exist in the question mapping for the given survey"""
-    # Get all variables for this survey from question mapping
-    survey_vars = question_mapping[question_mapping['surveyid'] == survey_id]['variable'].tolist()
-
-    # Filter for variables ending with '_open'
-    open_vars = [var for var in survey_vars if str(var).endswith('_open')]
-
-    # Get base column names from responses
-    response_cols = set()
-    for col in responses_df.columns:
-        base_col = col.split('.')[0]  # Remove .1 suffix if present
-        response_cols.add(base_col)
-
-    # Return only variables that exist in both mapping and responses
-    valid_vars = [var for var in open_vars if var in response_cols]
-
-    return sorted(valid_vars)
-
-
-def process_text(text, stopwords=None, synonym_groups=None):
-    """
-    Clean and process text with improved stopword handling and synonym group support.
-
-    Parameters:
-    - text: str - Input text to process
-    - stopwords: set - Set of stopwords to remove (optional)
-    - synonym_groups: dict - Dictionary mapping group names to sets of synonyms (optional)
-
-    Returns:
-    - str - Processed text
-    """
-    if pd.isna(text) or not isinstance(text, (str, bytes)):
-        return ""
-
-    # Convert to string and lowercase
-    text = str(text).lower().strip()
-
-    # Check for invalid responses
-    invalid_responses = {'dk', 'dk.', 'd/k', 'd.k.', 'dont know', "don't know",
-                         'na', 'n/a', 'n.a.', 'n/a.', 'not applicable',
-                         'none', 'nil', 'no response', 'no answer', '.', '-', 'x'}
-
-    if text in invalid_responses:
-        return ""
-
-    # Remove HTML tags and clean text
-    text = re.sub(r'<[^>]+>', '', text)
-    text = re.sub(r'[^\w\s]', ' ', text)  # Replace punctuation with spaces
-    text = re.sub(r'\s+', ' ', text).strip()  # Normalize whitespace
-
-    # Split into words
-    words = text.split()
-
-    # Apply stopwords if provided, otherwise use session state stopwords
-    if stopwords is None and 'custom_stopwords' in st.session_state:
-        stopwords = st.session_state.custom_stopwords
-
-    if stopwords:
-        words = [word for word in words if word not in stopwords]
-
-    # Apply synonym groups if provided
-    if synonym_groups:
-        processed_words = []
-        for word in words:
-            replaced = False
-            for group_name, synonyms in synonym_groups.items():
-                if word in synonyms:
-                    processed_words.append(group_name)
-                    replaced = True
-                    break
-            if not replaced:
-                processed_words.append(word)
-        words = processed_words
-
-    # Join and return
-    return ' '.join(word for word in words if word)
-
-
-def get_responses_for_variable(dfs_dict, var, group_by=None):
-    """Get responses for a variable across all surveys"""
-    responses_by_survey = {}
-
-    for survey_id, df in dfs_dict.items():
-        # Find matching columns for this variable
-        var_pattern = f"^{re.escape(var)}(?:\.1)?$"
-        matching_cols = [col for col in df.columns if re.match(var_pattern, col, re.IGNORECASE)]
-
-        if not matching_cols:
-            continue  # Skip if variable not in this survey
-
-        if group_by and group_by in df.columns:
-            grouped_responses = defaultdict(list)
-
-            for col in matching_cols:
-                temp_df = df[[col, group_by]].copy()
-                temp_df[col] = temp_df[col].astype(str)
-                temp_df[col] = temp_df[col].replace({'nan': '', 'None': '', 'NaN': ''})
-
-                for group_val, group_df in temp_df.groupby(group_by):
-                    responses = [
-                        resp for resp in group_df[col].tolist()
-                        if isinstance(resp, str) and resp.strip() and
-                           resp.lower() not in {'nan', 'none', 'n/a', 'na'}
-                    ]
-                    if responses:
-                        grouped_responses[str(group_val)].extend(responses)
-
-            # Remove duplicates while preserving order
-            for group_val in grouped_responses:
-                seen = set()
-                unique_responses = []
-                for resp in grouped_responses[group_val]:
-                    resp_clean = resp.strip()
-                    if resp_clean and resp_clean not in seen:
-                        seen.add(resp_clean)
-                        unique_responses.append(resp_clean)
-                if unique_responses:
-                    responses_by_survey[f"{survey_id}_{group_val}"] = unique_responses
-        else:
-            # Original ungrouped logic
-            responses = []
-            for col in matching_cols:
-                series = df[col].astype(str)
-                series = series.replace({'nan': '', 'None': '', 'NaN': ''})
-
-                valid_responses = [
-                    resp for resp in series.tolist()
-                    if isinstance(resp, str) and resp.strip() and
-                       resp.lower() not in {'nan', 'none', 'n/a', 'na'}
-                ]
-                responses.extend(valid_responses)
-
-            # Remove duplicates while preserving order
-            seen = set()
-            unique_responses = []
-            for resp in responses:
-                resp_clean = resp.strip()
-                if resp_clean and resp_clean not in seen:
-                    seen.add(resp_clean)
-                    unique_responses.append(resp_clean)
-
-            if unique_responses:
-                responses_by_survey[survey_id] = unique_responses
-
-    return responses_by_survey
-
-# Stopwords
-for lang in ['english', 'french']:
-    try:
-        nltk.data.find(f'corpora/stopwords/{lang}')
-    except LookupError:
-        nltk.download('stopwords')
-
+###############################################################################
+# 2) STOPWORDS MANAGEMENT
+###############################################################################
 
 def load_custom_stopwords_file():
-    """Load custom stopwords from CSV file"""
+    """Load custom stopwords from CSV if exists."""
     try:
         if os.path.exists('custom_stopwords.csv'):
-            custom_stopwords_df = pd.read_csv('custom_stopwords.csv')
-            return set(word.lower().strip()
-                       for word in custom_stopwords_df['word'].tolist()
-                       if isinstance(word, str))
-        return set()
+            df = pd.read_csv('custom_stopwords.csv')
+            return set(str(x).lower().strip() for x in df['word'] if isinstance(x, str))
     except Exception as e:
-        st.error(f"Error loading custom stopwords file: {str(e)}")
-        return set()
-
-
-def initialize_stopwords():
-    """Initialize stopwords from NLTK (English and French) and custom additions"""
-    if 'custom_stopwords' not in st.session_state:
-        try:
-            # Get both English and French stopwords
-            english_stops = set(stopwords.words('english'))
-            french_stops = set(stopwords.words('french'))
-
-            # Combine NLTK stopwords
-            nltk_stops = english_stops.union(french_stops)
-
-            # Load custom stopwords from file
-            custom_stops = load_custom_stopwords_file()
-
-            # Merge all stopwords
-            merged_stops = nltk_stops.union(custom_stops)
-
-            ##################################################################
-            # NEW: Normalize the final set so they match your text preprocessing
-            ##################################################################
-            st.session_state.custom_stopwords = normalize_stopword_set(merged_stops)
-
-        except Exception as e:
-            st.error(f"Error initializing stopwords: {str(e)}")
-            st.session_state.custom_stopwords = set()
+        st.error(f"Error loading custom stopwords: {e}")
+    return set()
 
 def normalize_stopword_set(words_set):
-    """
-    Convert each stopword to lowercase, remove punctuation/HTML/spaces, etc.,
-    and *split* it the same way process_text() does.
-    This ensures 'quelqu'un' becomes 'quelqu' and 'un'.
-    """
+    """Convert stopwords to lowercase, remove punctuation/spaces, etc."""
     normalized = set()
     for w in words_set:
-        # 1) Lowercase & strip
         w = str(w).lower().strip()
-        # 2) Remove HTML
         w = re.sub(r'<[^>]+>', '', w)
-        # 3) Replace punctuation with spaces
         w = re.sub(r'[^\w\s]', ' ', w)
-        # 4) Collapse whitespace
         w = re.sub(r'\s+', ' ', w).strip()
-
-        # 5) Split the cleaned stopword into tokens
-        #    e.g., "quelqu'un" -> "quelqu un" -> ["quelqu","un"]
         if w:
-            tokens = w.split()
-            for t in tokens:
-                if t:
-                    normalized.add(t)
+            for tok in w.split():
+                normalized.add(tok)
     return normalized
 
+def initialize_stopwords():
+    """Load NLTK + custom CSV, unify them, store in session_state."""
+    if not st.session_state.get('custom_stopwords'):
+        eng = set(stopwords.words('english'))
+        fr = set(stopwords.words('french'))
+        custom = load_custom_stopwords_file()
+        merged = eng.union(fr).union(custom)
+        st.session_state.custom_stopwords = normalize_stopword_set(merged)
+
+initialize_stopwords()
+
 def update_stopwords_batch(new_words):
-    """Add multiple new stopwords at once and save to CSV"""
+    """Add multiple new stopwords + save to CSV."""
     try:
-        valid_words = {
-            str(word).lower().strip()
-            for word in new_words
-            if word and isinstance(word, str) and not str(word).replace(".", "").replace("-", "").isnumeric()
-        }
+        valid = {str(w).lower().strip() for w in new_words if w and isinstance(w, str)}
+        if not valid:
+            return False, "No valid stopwords provided."
 
-        if not valid_words:
-            return False, "No valid stopwords provided"
-
-        # Add new words to session state
-        original_count = len(st.session_state.custom_stopwords)
-        st.session_state.custom_stopwords.update(valid_words)
-
-        # Normalize again to match your tokenizer
+        original_len = len(st.session_state.custom_stopwords)
+        st.session_state.custom_stopwords.update(valid)
         st.session_state.custom_stopwords = normalize_stopword_set(st.session_state.custom_stopwords)
 
-        # Read existing custom stopwords from CSV if it exists
-        existing_custom_words = set()
+        # Merge with existing CSV
+        existing = set()
         if os.path.exists('custom_stopwords.csv'):
             try:
-                custom_df = pd.read_csv('custom_stopwords.csv')
-                existing_custom_words = set(word.lower().strip()
-                                            for word in custom_df['word'].tolist()
-                                            if isinstance(word, str))
-            except Exception:
+                df = pd.read_csv('custom_stopwords.csv')
+                for x in df['word']:
+                    if isinstance(x, str):
+                        existing.add(x.lower().strip())
+            except:
                 pass
+        all_words = existing.union(st.session_state.custom_stopwords)
+        newdf = pd.DataFrame(sorted(all_words), columns=['word'])
+        newdf.to_csv('custom_stopwords.csv', index=False)
 
-        # Combine existing and new custom words
-        all_custom_words = existing_custom_words.union(st.session_state.custom_stopwords)
-
-        # Save updated custom stopwords to CSV
-        custom_df = pd.DataFrame(sorted(all_custom_words), columns=['word'])
-        custom_df.to_csv('custom_stopwords.csv', index=False)
-
-        added_count = len(st.session_state.custom_stopwords) - original_count
-        return True, f"Added {added_count} new stopwords and updated custom_stopwords.csv"
+        added_count = len(st.session_state.custom_stopwords) - original_len
+        return True, f"Added {added_count} new stopwords."
     except Exception as e:
-        return False, f"Error updating stopwords: {str(e)}"
-
+        return False, f"Error: {e}"
 
 def remove_stopword(word):
-    """Remove a stopword from the set and update CSV"""
+    """Remove a single stopword + update CSV."""
     try:
         if word in st.session_state.custom_stopwords:
             st.session_state.custom_stopwords.remove(word)
-
-            # Save updated stopwords to CSV
-            stopwords_df = pd.DataFrame(
-                sorted(st.session_state.custom_stopwords),
-                columns=['word']
-            )
-            stopwords_df.to_csv('custom_stopwords.csv', index=False)
-            return True, f"Removed '{word}' from stopwords"
-        return False, f"'{word}' not found in stopwords"
+            # Save back
+            df = pd.DataFrame(sorted(st.session_state.custom_stopwords), columns=['word'])
+            df.to_csv('custom_stopwords.csv', index=False)
+            return True, f"Removed {word}."
+        else:
+            return False, f"{word} not in list."
     except Exception as e:
-        return False, f"Error removing stopword: {str(e)}"
+        return False, f"Error removing stopword: {e}"
 
-
-def reset_to_nltk_defaults():
-    """Reset stopwords to NLTK defaults (English and French) plus custom defaults"""
+def reset_stopwords_to_nltk():
+    """Reset to NLTK defaults + custom CSV merges."""
     try:
-        # Get both English and French stopwords
-        english_stops = set(stopwords.words('english'))
-        french_stops = set(stopwords.words('french'))
-
-        # Load custom defaults
-        custom_stops = load_custom_stopwords_file()
-
-        # Combine them all
-        merged_stops = english_stops.union(french_stops).union(custom_stops)
-
-        ##################################################################
-        # Normalize again to keep consistent with your text preprocessing
-        ##################################################################
-        st.session_state.custom_stopwords = normalize_stopword_set(merged_stops)
-
-        # Save to CSV
-        stopwords_df = pd.DataFrame(
-            sorted(st.session_state.custom_stopwords),
-            columns=['word']
-        )
-        stopwords_df.to_csv('custom_stopwords.csv', index=False)
-
-        return True, (f"Reset to defaults ({len(english_stops)} English + "
-                      f"{len(french_stops)} French + {len(custom_stops)} custom words)")
+        eng = set(stopwords.words('english'))
+        fr = set(stopwords.words('french'))
+        custom = load_custom_stopwords_file()
+        merged = eng.union(fr).union(custom)
+        st.session_state.custom_stopwords = normalize_stopword_set(merged)
+        # Save
+        df = pd.DataFrame(sorted(st.session_state.custom_stopwords), columns=['word'])
+        df.to_csv('custom_stopwords.csv', index=False)
+        return True, "Reset stopwords to default + custom."
     except Exception as e:
-        return False, f"Error resetting stopwords: {str(e)}"
-
+        return False, f"Error: {e}"
 
 def render_stopwords_management():
-    with st.sidebar:
+    """Render the stopwords manager in sidebar."""
+    st.markdown("#### Stopwords Management")
+
+    new_stops = st.text_area("Add Stopwords (one per line)", key="new_stopwords_input")
+    if st.button("Add Stopwords"):
+        if new_stops.strip():
+            words = [w.strip() for w in new_stops.split('\n') if w.strip()]
+            ok, msg = update_stopwords_batch(words)
+            if ok:
+                st.success(msg)
+            else:
+                st.error(msg)
+        else:
+            st.warning("No input given.")
+
+    show_current = st.checkbox("View/Edit Current Stopwords", False)
+    if show_current:
+        stoplist = sorted(st.session_state.custom_stopwords)
+        st.write(f"Total: {len(stoplist)} stopwords.")
+        filter_st = st.text_input("Filter list", "")
+        if filter_st.strip():
+            stoplist = [s for s in stoplist if filter_st.lower() in s.lower()]
+
+        cols = st.columns(3)
+        for i, w in enumerate(stoplist):
+            if cols[i % 3].button(f"❌ {w}", key=f"remove_stop_{w}"):
+                ok, msg = remove_stopword(w)
+                if ok:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+    if st.button("Reset to defaults"):
+        ok, msg = reset_stopwords_to_nltk()
+        if ok:
+            st.success(msg)
+        else:
+            st.error(msg)
+
+
+###############################################################################
+# 3) SYNONYM GROUP MANAGEMENT
+###############################################################################
+
+def load_synonym_groups_from_csv(file='synonym_groups.csv'):
+    """Load synonyms from CSV -> session_state."""
+    from collections import defaultdict
+    try:
+        if os.path.exists(file):
+            df = pd.read_csv(file)
+            syns = defaultdict(set)
+            for _, row in df.iterrows():
+                gname = str(row['group_name']).strip().lower()
+                syn = str(row['synonym']).strip().lower()
+                if gname and syn:
+                    syns[gname].add(syn)
+            st.session_state.synonym_groups = syns
+    except Exception as e:
+        st.error(f"Error loading synonyms: {e}")
+
+def save_synonym_groups_to_csv(file='synonym_groups.csv'):
+    """Save synonyms from session_state -> CSV."""
+    import csv
+    rows = []
+    for group_name, synonyms in st.session_state.synonym_groups.items():
+        for syn in synonyms:
+            rows.append({'group_name': group_name, 'synonym': syn})
+    df = pd.DataFrame(rows)
+    df.to_csv(file, index=False)
+
+if 'synonym_groups_loaded' not in st.session_state:
+    load_synonym_groups_from_csv()
+    st.session_state.synonym_groups_loaded = True
+
+def render_synonym_groups_management():
+    """Render synonyms manager in sidebar."""
+    st.markdown("#### Synonym Groups")
+    # SINGLE EXPANDER
+    with st.expander("Manage Synonym Groups", expanded=False):
+        new_grp = st.text_input("Group Name")
+        new_syns = st.text_area("Synonyms (one per line)")
+        if st.button("Add/Update Group"):
+            if new_grp and new_syns:
+                gname = new_grp.lower().strip()
+                synonyms = {s.lower().strip() for s in new_syns.split('\n') if s.strip()}
+                if gname in st.session_state.synonym_groups:
+                    st.session_state.synonym_groups[gname].update(synonyms)
+                    st.success(f"Updated group '{gname}' with {len(synonyms)} synonyms.")
+                else:
+                    st.session_state.synonym_groups[gname] = synonyms
+                    st.success(f"Created group '{gname}' with {len(synonyms)} synonyms.")
+                save_synonym_groups_to_csv()
+            else:
+                st.warning("Please enter a group name + synonyms.")
+
         st.markdown("---")
-        with st.expander("⚙️ Stopwords Management", expanded=False):
-            st.markdown("### Manage Stopwords")
+        st.write("#### Existing Groups")
+        # NO SUB-EXPANDERS NOW
+        for g, syns in dict(st.session_state.synonym_groups).items():
+            st.write(f"**Group:** {g}")
+            st.write(", ".join(sorted(list(syns))))
+            if st.button(f"Delete group '{g}'", key=f"del_{g}"):
+                del st.session_state.synonym_groups[g]
+                save_synonym_groups_to_csv()
+                st.warning(f"Deleted group {g}.")
 
-            # Add multiple stopwords
-            new_stopwords = st.text_area(
-                "Add stopwords (one per line)",
-                help="Enter multiple words, one per line",
-                key="new_stopwords_input"
-            )
 
-            if st.button("Add Stopwords"):
-                if new_stopwords:
-                    # Split by newlines and filter empty strings
-                    words_list = [w.strip() for w in new_stopwords.split('\n') if w.strip()]
-                    if words_list:
-                        success, message = update_stopwords_batch(words_list)
-                        if success:
-                            st.success(message)
-                        else:
-                            st.warning(message)
-                    else:
-                        st.warning("Please enter at least one word")
 
-            # View/Remove current stopwords
-            view_stopwords = st.checkbox("View/Edit Current Stopwords", key="view_stopwords")
+###############################################################################
+# 4) DATA LOADING
+###############################################################################
 
-            if view_stopwords:
-                stopwords_list = sorted(st.session_state.custom_stopwords)
-                st.write(f"Total stopwords: {len(stopwords_list)}")
+@st.cache_data
+def load_excel_file(excel, chosen_survey="All"):
+    """Load the question_mapping sheet + either chosen_survey or all."""
+    try:
+        xls = pd.ExcelFile(excel)
+        sheets = xls.sheet_names
+        if 'question_mapping' not in sheets:
+            return None, None, None, None
 
-                # Add a search filter
-                search_term = st.text_input("Filter stopwords", "")
+        qmap = pd.read_excel(xls, 'question_mapping')
+        if not all(c in qmap.columns for c in ['variable','question','surveyid']):
+            return None, None, None, None
 
-                # Filter stopwords based on search term
-                if search_term:
-                    filtered_stopwords = [word for word in stopwords_list
-                                          if search_term.lower() in word.lower()]
-                else:
-                    filtered_stopwords = stopwords_list
+        responses_dict = {}
+        all_cols = set()
+        open_vars_set = set()
 
-                # Display stopwords in columns with remove buttons
-                cols = st.columns(2)
-                for i, word in enumerate(filtered_stopwords):
-                    col = cols[i % 2]
-                    if col.button(f"❌ {word}", key=f"remove_{word}"):
-                        success, message = remove_stopword(word)
-                        if success:
-                            st.success(message)
-                            st.rerun()
-                        else:
-                            st.error(message)
+        valid_sheets = [s for s in sheets if s != 'question_mapping']
+        if chosen_survey == "All":
+            sheets_to_load = valid_sheets
+        else:
+            sheets_to_load = [s for s in valid_sheets if s == chosen_survey]
 
-            # Reset to defaults
-            st.markdown("---")
-            if st.button("Reset to Defaults", type="secondary"):
-                success, message = reset_to_nltk_defaults()
-                if success:
-                    st.success(message)
-                else:
-                    st.error(message)
+        invalid_resps = {
+            'dk','dk.','d/k','d.k.','dont know',"don't know","na","n/a","n.a.","n/a.",
+            'not applicable','none','nil','no response','no answer','.','-','x','refused','ref',
+            'dk/ref','nan','NaN','NAN','_dk_','_na_','___dk___','___na___','__dk__','__na__',
+            '_____dk_____','_____na_____',''
+        }
 
-# Table functions
-def initialize_coding_state():
-    """Initialize session state variables for open coding"""
-    if 'current_tab' not in st.session_state:
-        st.session_state.current_tab = 0
+        for sheet in sheets_to_load:
+            df = pd.read_excel(xls, sheet_name=sheet,
+                               na_values=['','NA','nan','NaN','null','none','#N/A','N/A'])
+            base_cols = {c.split('.')[0] for c in df.columns}
+            all_cols.update(base_cols)
 
-    if 'open_coding_groups' not in st.session_state:
-        # Try to load from cache first
-        cached_groups = load_cached_groups()
-        st.session_state.open_coding_groups = cached_groups if cached_groups else []
+            open_candidates = {c for c in base_cols if c.endswith('_open')}
+            open_vars_set.update(open_candidates)
 
-    if 'open_coding_assignments' not in st.session_state:
-        # Try to load from cache first
-        cached_assignments = load_cached_assignments()
-        st.session_state.open_coding_assignments = cached_assignments if cached_assignments else {}
+            for col in df.columns:
+                if col.split('.')[0] in open_candidates:
+                    def clean_val(x):
+                        if pd.isna(x):
+                            return pd.NA
+                        x = str(x).lower().strip()
+                        if x in invalid_resps:
+                            return pd.NA
+                        return x
+                    df[col] = df[col].apply(clean_val)
+            responses_dict[sheet] = df
 
-    if 'last_save_time' not in st.session_state:
-        st.session_state.last_save_time = time.time()
+        # grouping columns
+        grouping_cols = sorted(c for c in all_cols if not c.endswith('_open') and not c.endswith('.1'))
 
+        # open var options
+        open_var_opts = {}
+        for v in sorted(open_vars_set):
+            row_for_v = qmap[qmap['variable'] == v]
+            if not row_for_v.empty:
+                open_var_opts[v] = f"{v} - {row_for_v.iloc[0]['question']}"
+            else:
+                open_var_opts[v] = v
+
+        return qmap, responses_dict, open_var_opts, grouping_cols
+
+    except Exception as e:
+        print(f"Error loading file: {e}")
+        return None, None, None, None
+
+
+def get_responses_for_variable(dfs_dict, var, group_by=None):
+    """Fetch responses for a chosen var across all sheets, optionally grouped."""
+    import re
+    from collections import defaultdict
+
+    out = {}
+    pattern = f"^{re.escape(var)}(?:\\.1)?$"
+
+    for sid, df in dfs_dict.items():
+        # columns that match var or var.1
+        matching_cols = [c for c in df.columns if re.match(pattern, c, re.IGNORECASE)]
+        if not matching_cols:
+            continue
+
+        if group_by and group_by in df.columns:
+            grouped_responses = defaultdict(list)
+            for col in matching_cols:
+                sub_df = df[[col, group_by]].dropna(subset=[col])
+                for gval, cdf in sub_df.groupby(group_by):
+                    # filter empties
+                    texts = [r for r in cdf[col].astype(str).tolist() if r.strip().lower() != 'nan']
+                    if texts:
+                        grouped_responses[str(gval)].extend(texts)
+            for gval, arr in grouped_responses.items():
+                if arr:
+                    out[f"{sid}_{gval}"] = arr
+        else:
+            all_texts = []
+            for col in matching_cols:
+                colvals = [r for r in df[col].dropna().astype(str).tolist() if r.strip().lower() != 'nan']
+                all_texts.extend(colvals)
+            if all_texts:
+                # remove duplicates
+                seen = set()
+                uniq = []
+                for t in all_texts:
+                    if t not in seen:
+                        seen.add(t)
+                        uniq.append(t)
+                out[sid] = uniq
+
+    # Sort by descending # of responses
+    out = dict(sorted(out.items(), key=lambda x: len(x[1]), reverse=True))
+    return out
+
+
+###############################################################################
+# 5) TEXT PROCESSING
+###############################################################################
+
+def process_text(text, stopwords=None, synonym_groups=None):
+    """Basic cleaning + optional synonyms. Already used in wordcloud functions."""
+    if pd.isna(text) or not isinstance(text, str):
+        return ""
+    txt = str(text).lower().strip()
+
+    txt = re.sub(r'<[^>]+>', '', txt)
+    txt = re.sub(r'[^\w\s]', ' ', txt)
+    txt = re.sub(r'\s+', ' ', txt).strip()
+
+    words = txt.split()
+
+    # stopwords
+    if stopwords:
+        words = [w for w in words if w not in stopwords]
+
+    # synonyms
+    if synonym_groups:
+        replaced_words = []
+        for w in words:
+            replaced = False
+            for gname, synset in synonym_groups.items():
+                if w in synset:
+                    replaced_words.append(gname)
+                    replaced = True
+                    break
+            if not replaced:
+                replaced_words.append(w)
+        words = replaced_words
+
+    return ' '.join(words)
+
+
+###############################################################################
+# 6) OPEN CODING (Groups & Assignments) + SAMPLES
+###############################################################################
+
+def load_open_coding_groups(file='cached_groups.csv'):
+    """Load group definitions from CSV -> session_state."""
+    if os.path.exists(file):
+        try:
+            df = pd.read_csv(file)
+            return df.to_dict('records')
+        except:
+            pass
+    return []
+
+def load_open_coding_assignments(file='cached_assignments.csv'):
+    """Load text->group assignment from CSV -> session_state."""
+    if os.path.exists(file):
+        try:
+            df = pd.read_csv(file)
+            return dict(zip(df.text, df.group))
+        except:
+            pass
+    return {}
 
 def save_coding_state():
-    """Save current coding state to CSV files"""
+    """Save open_coding_groups & open_coding_assignments to disk + backups."""
     try:
-        # Save groups
         if st.session_state.open_coding_groups:
-            groups_df = pd.DataFrame(st.session_state.open_coding_groups)
-            groups_df.to_csv('cached_groups.csv', index=False)
+            df = pd.DataFrame(st.session_state.open_coding_groups)
+            df.to_csv('cached_groups.csv', index=False)
 
-        # Save assignments
         if st.session_state.open_coding_assignments:
-            assignments_df = pd.DataFrame([
-                {"text": k, "group": v}
-                for k, v in st.session_state.open_coding_assignments.items()
-            ])
-            assignments_df.to_csv('cached_assignments.csv', index=False)
+            df2 = pd.DataFrame(
+                [{'text': k, 'group': v} for k, v in st.session_state.open_coding_assignments.items()]
+            )
+            df2.to_csv('cached_assignments.csv', index=False)
 
-        # Create backup with timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_dir = "coding_backups"
-        os.makedirs(backup_dir, exist_ok=True)
-
+        # backups
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        os.makedirs('coding_backups', exist_ok=True)
         if st.session_state.open_coding_groups:
-            groups_df.to_csv(f'{backup_dir}/groups_{timestamp}.csv', index=False)
+            df.to_csv(f"coding_backups/groups_{ts}.csv", index=False)
         if st.session_state.open_coding_assignments:
-            assignments_df.to_csv(f'{backup_dir}/assignments_{timestamp}.csv', index=False)
+            df2.to_csv(f"coding_backups/assignments_{ts}.csv", index=False)
 
         st.session_state.last_save_time = time.time()
         return True
@@ -627,90 +494,32 @@ def save_coding_state():
         print(f"Error saving coding state: {e}")
         return False
 
-
-def load_cached_groups():
-    """Load groups from cache file"""
-    try:
-        if os.path.exists('cached_groups.csv'):
-            groups_df = pd.read_csv('cached_groups.csv')
-            return groups_df.to_dict('records')
-    except Exception as e:
-        print(f"Error loading cached groups: {e}")
-    return None
+def initialize_coding_state():
+    """Ensure open coding data is loaded from disk once."""
+    if 'coding_initialized' not in st.session_state:
+        # load groups
+        st.session_state.open_coding_groups = load_open_coding_groups()
+        # load assignments
+        st.session_state.open_coding_assignments = load_open_coding_assignments()
+        st.session_state.coding_initialized = True
 
 
-def load_cached_assignments():
-    """Load assignments from cache file"""
-    try:
-        if os.path.exists('cached_assignments.csv'):
-            assignments_df = pd.read_csv('cached_assignments.csv')
-            return dict(zip(assignments_df.text, assignments_df.group))
-    except Exception as e:
-        print(f"Error loading cached assignments: {e}")
-    return None
-
-
-def auto_save_check():
-    """Check if it's time to auto-save (every 5 minutes)"""
-    if (time.time() - st.session_state.last_save_time) > 300:  # 5 minutes
-        return save_coding_state()
-    return False
-
-
-def get_default_columns(df):
-    """Get default columns (id, age, jobtitle, province/state) from dataframe"""
-    default_cols = ['id', 'age', 'jobtitle']
-    location_col = 'province' if 'province' in df.columns else 'state' if 'state' in df.columns else None
-
-    available_cols = []
-    for col in default_cols:
-        if col in df.columns:
-            available_cols.append(col)
-
-    if location_col:
-        available_cols.append(location_col)
-
-    return available_cols
-
-
-def get_filtered_table(df, filters):
-    """Apply filters to the dataframe"""
-    filtered_df = df.copy()
-
-    for col, value in filters.items():
-        if value:
-            filtered_df = filtered_df[
-                filtered_df[col].astype(str).str.contains(value, case=False, na=False)
-            ]
-
-    return filtered_df
-
-
-def update_table_with_filters(table, search_term=None, column_filters=None):
-    """Update table based on search term and column filters"""
-    if search_term or column_filters:
-        filtered = table.copy()
-
-        if search_term:
-            mask = pd.Series(False, index=filtered.index)
-            for col in filtered.columns:
-                mask |= filtered[col].astype(str).str.contains(search_term, case=False, na=False)
-            filtered = filtered[mask]
-
-        if column_filters:
-            filtered = get_filtered_table(filtered, column_filters)
-
-        return filtered
-    return table
-
-
-def render_open_coding_tab(variable, responses_dict, open_var_options, grouping_columns):
-    st.markdown("## 🗂️ Open Coding (All Results, Inline Group Editing)")
-
-    # Initialize session state
+def render_open_coding_interface(variable,
+                                responses_dict,
+                                open_var_options,
+                                grouping_columns,
+                                group_by=None):
+    """
+    Renders a combined "Open Coding" tab that includes:
+      - managing groups
+      - a coded table (Data Editor)
+      - plus random samples to read/categorize
+    """
     initialize_coding_state()
+    auto_save_check()
 
-    # Display question box
+    st.markdown("## 🔎 Open Coding & Samples")
+
     st.markdown("""
     <style>
         .question-box {
@@ -735,661 +544,472 @@ def render_open_coding_tab(variable, responses_dict, open_var_options, grouping_
     </style>
     """, unsafe_allow_html=True)
 
+    # Show question text
+    ov_dict = open_var_options
     st.markdown(f"""
     <div class="question-box">
         <div class="question-label">Primary Question</div>
-        <div class="question-text">{open_var_options[variable]}</div>
+        <div class="question-text">{ov_dict.get(variable, "No question text")}</div>
     </div>
     """, unsafe_allow_html=True)
 
-    ################################################################
-    # Manage Groups Section
-    ################################################################
+    # MANAGE GROUPS
     st.markdown("### Manage Groups")
-    with st.expander("Create or Edit Groups", expanded=True):
-        col1, col2 = st.columns([3, 1])
-        with col1:
+    with st.expander("Create/Edit Groups", expanded=False):
+        c1, c2 = st.columns([3,1])
+        with c1:
             new_group_name = st.text_input("Group Name:")
             new_group_desc = st.text_input("Group Description (optional):")
-
             if st.button("Add / Update Group"):
                 gname = new_group_name.strip()
                 if gname:
-                    existing = next((g for g in st.session_state.open_coding_groups if g["name"] == gname), None)
+                    existing = next((g for g in st.session_state.open_coding_groups if g['name'] == gname), None)
                     if existing:
                         existing["desc"] = new_group_desc.strip()
-                        st.success(f"Updated description for group '{gname}'.")
+                        st.success(f"Updated group '{gname}'.")
                     else:
                         st.session_state.open_coding_groups.append({
                             "name": gname,
                             "desc": new_group_desc.strip()
                         })
-                        st.success(f"Group '{gname}' created.")
+                        st.success(f"Created new group '{gname}'.")
                     save_coding_state()
                 else:
                     st.warning("Please enter a valid group name.")
-
-        with col2:
-            if st.button("💾 Save Changes", type="primary"):
-                if save_coding_state():
-                    st.success("Changes saved successfully!")
+        with c2:
+            if st.button("💾 Save Group Changes"):
+                ok = save_coding_state()
+                if ok:
+                    st.success("Groups saved.")
                 else:
-                    st.error("Error saving changes")
+                    st.error("Error saving groups.")
 
-        # Group removal
-        remove_group = st.selectbox(
-            "Delete a group?",
-            options=["(None)"] + [g["name"] for g in st.session_state.open_coding_groups]
-        )
-        if remove_group != "(None)":
-            if st.button("Remove Selected Group"):
+        # Remove group
+        del_choice = st.selectbox("Remove a Group?", ["(None)"] + [g["name"] for g in st.session_state.open_coding_groups])
+        if del_choice != "(None)":
+            if st.button(f"Remove Group '{del_choice}'"):
                 st.session_state.open_coding_groups = [
-                    g for g in st.session_state.open_coding_groups
-                    if g["name"] != remove_group
+                    g for g in st.session_state.open_coding_groups if g['name'] != del_choice
                 ]
-                # Unassign affected rows
+                # remove from assignments
                 for txt_key, assigned_grp in list(st.session_state.open_coding_assignments.items()):
-                    if assigned_grp == remove_group:
+                    if assigned_grp == del_choice:
                         st.session_state.open_coding_assignments[txt_key] = "Unassigned"
                 save_coding_state()
-                st.success(f"Removed group '{remove_group}'.")
+                st.success(f"Group '{del_choice}' removed.")
 
-    ################################################################
-    # Data Collection and Processing
-    ################################################################
-    st.markdown("### Data Selection")
-
-    # Get all available columns
+    # COLLECT RELEVANT DATA
     all_dfs = []
-    for survey_id, df in responses_dict.items():
+    for sid, df in responses_dict.items():
         if variable in df.columns:
-            # Add survey_id and process region before appending
-            df_with_survey = df.copy()
-            df_with_survey['surveyid'] = survey_id
-
-            # Handle region (combine province and state)
-            if 'province' in df_with_survey.columns:
-                df_with_survey['region'] = df_with_survey['province']
-                df_with_survey.drop('province', axis=1, inplace=True)
-            elif 'state' in df_with_survey.columns:
-                df_with_survey['region'] = df_with_survey['state']
-                df_with_survey.drop('state', axis=1, inplace=True)
-
-            all_dfs.append(df_with_survey)
-
+            tmp = df.copy()
+            tmp['surveyid'] = sid
+            if 'province' in tmp.columns:
+                tmp['region'] = tmp['province']
+                tmp.drop('province', axis=1, inplace=True)
+            elif 'state' in tmp.columns:
+                tmp['region'] = tmp['state']
+                tmp.drop('state', axis=1, inplace=True)
+            all_dfs.append(tmp)
     if not all_dfs:
-        st.warning("No valid data found.")
+        st.warning("No valid data found for this variable.")
         return
 
-    combined_df = pd.concat(all_dfs, ignore_index=True)
+    cdf = pd.concat(all_dfs, ignore_index=True)
 
-    # Add region to default columns if it exists
-    if 'region' in combined_df.columns:
-        default_cols = get_default_columns(combined_df)
+    # Identify default columns
+    default_cols = ['id','age','jobtitle']
+    if 'region' in cdf.columns:
         default_cols.append('region')
-    else:
-        default_cols = get_default_columns(combined_df)
+    def_cols_present = [c for c in default_cols if c in cdf.columns]
 
-    # Get base variable name (removing _open suffix)
-    base_var = variable.replace('_open', '')
+    # Also see if variable has a base var
+    base_var = variable.replace('_open','')
 
-    # Additional columns selection
-    remaining_cols = [col for col in grouping_columns if col not in default_cols]
-    user_vars = st.multiselect(
-        f"Choose additional columns (besides {', '.join(default_cols)}):",
-        options=remaining_cols,
+    # Let user pick additional columns
+    grouping_cols = [g for g in grouping_columns if g not in def_cols_present]
+    st.markdown("### Data Selection")
+    user_cols = st.multiselect(
+        "Pick additional columns to display:",
+        options=grouping_cols,
         default=[]
     )
 
-    # Build selected columns list ensuring surveyid is last
-    selected_cols = []
-    selected_cols.extend(default_cols)
-    selected_cols.extend(user_vars)
+    used_cols = def_cols_present[:]
+    used_cols.extend(user_cols)
+    if base_var in cdf.columns and base_var not in used_cols:
+        used_cols.append(base_var)
+    used_cols.append(variable)
+    used_cols.append('surveyid')
+    used_cols = list(dict.fromkeys(used_cols))  # remove duplicates if any
 
-    # Only add base variable if it exists
-    if base_var in combined_df.columns:
-        if base_var not in selected_cols:
-            selected_cols.append(base_var)
+    # Ensure 'surveyid' is right after 'id' if both exist
+    if 'id' in used_cols and 'surveyid' in used_cols:
+        used_cols.remove('surveyid')
+        idx_ = used_cols.index('id')
+        used_cols.insert(idx_+1, 'surveyid')
 
-    selected_cols.append(variable)
-    selected_cols.append('surveyid')  # Add surveyid at the end
+    # Build the final table
+    show_table_expander = st.expander("🔎 View & Edit Full Table", expanded=False)
+    with show_table_expander:
+        temp_data = cdf[used_cols].copy()
+        temp_data = temp_data.dropna(subset=[variable])
+        temp_data = temp_data[temp_data[variable].astype(str).str.strip() != ""]
 
-    # Remove any duplicates while preserving order
-    selected_cols = list(dict.fromkeys(selected_cols))
+        # Filter
+        st.markdown("**Global Search/Filter**")
+        gl_search = st.text_input("Search across all columns:")
+        show_col_filters = st.checkbox("Show column-based filters", False)
+        col_filters = {}
+        if show_col_filters:
+            st.write("Enter text to filter each column:")
+            columns_per_row = 3
+            fil_cols = st.columns(columns_per_row)
+            for i, c in enumerate(used_cols):
+                with fil_cols[i % columns_per_row]:
+                    col_filters[c] = st.text_input(f"Filter {c}", "")
 
-    # Order
-    selected_cols = list(dict.fromkeys(selected_cols))
-    if 'id' in selected_cols and 'surveyid' in selected_cols:
-        selected_cols.remove('surveyid')
-        idx_of_id = selected_cols.index('id')
-        selected_cols.insert(idx_of_id + 1, 'surveyid')
+        # apply
+        df_for_edit = temp_data.copy()
 
-    ################################################################
-    # Build and Display Enhanced Table
-    ################################################################
-    st.markdown("### Coding Table")
+        if gl_search.strip():
+            # do a global OR search across columns
+            mask = pd.Series(False, index=df_for_edit.index)
+            for c in df_for_edit.columns:
+                mask |= df_for_edit[c].astype(str).str.contains(gl_search, case=False, na=False)
+            df_for_edit = df_for_edit[mask]
 
-    # Search and filter controls
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        search_term = st.text_input("🔍 Search across all columns:", key="global_search")
-    with col2:
-        show_filters = st.checkbox("Show column filters", value=False)
+        if show_col_filters:
+            for c, val in col_filters.items():
+                if val.strip():
+                    df_for_edit = df_for_edit[df_for_edit[c].astype(str).str.contains(val, case=False, na=False)]
 
-    # Column filters
-    column_filters = {}
-    if show_filters:
-        st.markdown("#### Column Filters")
-        filter_cols = st.columns(3)
-        for i, col in enumerate(selected_cols):
-            with filter_cols[i % 3]:
-                column_filters[col] = st.text_input(f"Filter {col}:", key=f"filter_{col}")
+        # Build a data dict for st.data_editor
+        rows_data = []
+        for idx, row in df_for_edit.iterrows():
+            resp_text = row[variable]
+            assigned_grp = st.session_state.open_coding_assignments.get(resp_text, "Unassigned")
+            grp_desc = ""
+            if assigned_grp != "Unassigned":
+                gobj = next((g for g in st.session_state.open_coding_groups if g['name'] == assigned_grp), None)
+                if gobj:
+                    grp_desc = gobj.get("desc","")
 
-    # Get the data with all selected columns
-    table_data = combined_df[selected_cols].copy()
+            new_row = {c: row[c] for c in df_for_edit.columns}
+            new_row['coded_group'] = assigned_grp
+            new_row['group_desc'] = grp_desc
+            rows_data.append(new_row)
 
-    # >>> Add these lines to filter out blank or NaN responses for the _open variable <<<
-    open_var_name = variable  # We'll refer to this again below, so define it now
-    table_data = table_data.dropna(subset=[open_var_name])                       # drop rows where open var is NaN
-    table_data = table_data[table_data[open_var_name].astype(str).str.strip() != ""]  # drop rows with blank strings
+        final_df = pd.DataFrame(rows_data)
 
-    # Create column mappings but keep original names
-    closed_var_name = base_var if base_var in table_data.columns else None
-
-    # Build rows
-    table_rows = []
-    for idx, row in table_data.iterrows():
-        resp_text = row[open_var_name]
-        assigned_grp = st.session_state.open_coding_assignments.get(resp_text, "Unassigned")
-
-        # Get group description
-        group_desc = ""
-        if assigned_grp != "Unassigned":
-            grp_obj = next((g for g in st.session_state.open_coding_groups if g["name"] == assigned_grp), None)
-            if grp_obj:
-                group_desc = grp_obj["desc"]
-
-        # Build row data - keep original column names
-        one_row = {col: row[col] for col in table_data.columns}
-        one_row.update({
-            "coded_group": assigned_grp,
-            "group_description": group_desc
-        })
-        table_rows.append(one_row)
-
-    coded_table_df = pd.DataFrame(table_rows)
-    filtered_df = update_table_with_filters(coded_table_df, search_term, column_filters)
-
-    # Display table with enhanced configuration
-    group_options = ["Unassigned"] + [g["name"] for g in st.session_state.open_coding_groups]
-
-    column_config = {
-        "coded_group": st.column_config.SelectboxColumn(
+        # Build config for columns
+        colconf = {}
+        colconf['coded_group'] = st.column_config.SelectboxColumn(
             "Coded Group",
-            options=group_options,
-            help="Pick a group from dropdown"
-        ),
-        "group_description": st.column_config.TextColumn(
+            options=["Unassigned"] + [g["name"] for g in st.session_state.open_coding_groups],
+            help="Pick group from dropdown"
+        )
+        colconf['group_desc'] = st.column_config.TextColumn(
             "Group Description",
-            help="Auto-filled after picking a group",
-            disabled=True,
-        ),
-        "surveyid": st.column_config.TextColumn(
-            "Survey ID",
-            help="Source survey identifier",
             disabled=True
         )
-    }
+        for c in final_df.columns:
+            if c not in ['coded_group','group_desc']:
+                colconf[c] = st.column_config.TextColumn(c, disabled=(c != variable))
 
-    # Add original column display names
-    for col in filtered_df.columns:
-        if col not in column_config:
-            column_config[col] = st.column_config.TextColumn(
-                col,
-                help="Response data",
-                disabled=True if col != open_var_name else False
+        edited = st.data_editor(
+            final_df,
+            column_config=colconf,
+            hide_index=True,
+            use_container_width=True,
+            key="open_coding_data_editor"
+        )
+
+        # sync changes back
+        for i in edited.index:
+            rtxt = edited.loc[i, variable]
+            cgrp = edited.loc[i, 'coded_group']
+            st.session_state.open_coding_assignments[rtxt] = cgrp
+
+        st.markdown("#### Export")
+        c1, c2 = st.columns(2)
+        with c1:
+            # current view
+            cur_csv = edited.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="💾 Download Current View CSV",
+                data=cur_csv,
+                file_name=f"coded_data_view_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime='text/csv',
+                use_container_width=True
+            )
+        with c2:
+            # entire dataset with coding
+            all_rows = []
+            for idx0, row0 in temp_data.iterrows():
+                rt0 = row0[variable]
+                assigned_grp0 = st.session_state.open_coding_assignments.get(rt0, "Unassigned")
+                grp_desc0 = ""
+                if assigned_grp0 != "Unassigned":
+                    gobj0 = next((g for g in st.session_state.open_coding_groups if g["name"] == assigned_grp0), None)
+                    if gobj0: grp_desc0 = gobj0.get("desc","")
+
+                base_ = {c: row0[c] for c in temp_data.columns}
+                base_["coded_group"] = assigned_grp0
+                base_["group_desc"] = grp_desc0
+                all_rows.append(base_)
+            full_df = pd.DataFrame(all_rows)
+            full_csv = full_df.to_csv(index=False).encode('utf-8')
+
+            st.download_button(
+                label="📥 Download Complete Dataset",
+                data=full_csv,
+                file_name=f"complete_coded_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime='text/csv',
+                use_container_width=True
             )
 
-    edited_df = st.data_editor(
-        filtered_df,
-        column_config=column_config,
-        hide_index=True,
-        use_container_width=True,
-        key="coding_table"
-    )
+    # RENDER SAMPLES
+    st.markdown("---")
+    st.markdown("### Random Samples for Review")
 
-    # Update assignments
-    for row_idx in edited_df.index:
-        resp_text = edited_df.loc[row_idx, open_var_name]
-        new_grp = edited_df.loc[row_idx, "coded_group"]
-        st.session_state.open_coding_assignments[resp_text] = new_grp
+    def build_samples_dict():
+        out = {"All":[]}
+        for df in responses_dict.values():
+            if variable in df.columns:
+                for _, row in df.iterrows():
+                    val = row[variable]
+                    if pd.notna(val) and str(val).strip():
+                        out["All"].append({
+                            "text": str(val).strip(),
+                            "id": row["id"] if "id" in row else None,
+                            "age": row["age"] if "age" in row else None,
+                            "jobtitle": row["jobtitle"] if "jobtitle" in row else None,
+                            "province": row["region"] if "region" in row else None
+                        })
+        return out
 
-    auto_save_check()
+    samples_dict = build_samples_dict()
 
-    ################################################################
-    # Download Options
-    ################################################################
-    st.markdown("### Export Options")
-    col1, col2 = st.columns(2)
+    # If user selected a valid group_by, let's also gather samples that way
+    if group_by and group_by not in [None,'None']:
+        for sid, df in responses_dict.items():
+            if group_by in df.columns and variable in df.columns:
+                for gval in df[group_by].dropna().unique():
+                    cat_str = str(gval)
+                    sub_ = df[(df[group_by]==gval) & df[variable].notna()]
+                    for _, row in sub_.iterrows():
+                        vt = str(row[variable]).strip()
+                        if vt:
+                            if cat_str not in samples_dict:
+                                samples_dict[cat_str] = []
+                            samples_dict[cat_str].append({
+                                "text": vt,
+                                "id": row["id"] if "id" in row else None,
+                                "age": row["age"] if "age" in row else None,
+                                "jobtitle": row["jobtitle"] if "jobtitle" in row else None,
+                                "province": row["region"] if "region" in row else None
+                            })
 
-    with col1:
-        # Download current view
-        csv_data = edited_df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="💾 Download Current View as CSV",
-            data=csv_data,
-            file_name=f"coded_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
+    # De-duplicate
+    for cat_k, items in samples_dict.items():
+        seen_txt = set()
+        newlist = []
+        for obj in items:
+            if obj["text"] not in seen_txt:
+                seen_txt.add(obj["text"])
+                newlist.append(obj)
+        samples_dict[cat_k] = newlist
 
-    with col2:
-        # Download all data
-        full_csv = coded_table_df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="📥 Download Complete Dataset",
-            data=full_csv,
-            file_name=f"complete_coded_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
+    num_samp = st.slider("Number of samples per group", min_value=1, max_value=20, value=5)
+    if st.button("🔀 Shuffle Samples"):
+        st.session_state["sample_seed"] = int(time.time())
+    import random
+    random.seed(st.session_state.get("sample_seed", 1234))
 
+    for cat, arr in samples_dict.items():
+        st.markdown(f"#### {cat} (Total: {len(arr)})")
+        if not arr:
+            st.write("No data in this category.")
+            continue
+        # random sample
+        sub_samp = random.sample(arr, min(num_samp, len(arr)))
+        for i, obj in enumerate(sub_samp, 1):
+            with st.expander(f"[{cat}] Sample #{i}", expanded=False):
+                meta_parts = []
+                if obj["id"]: meta_parts.append(f"ID: {obj['id']}")
+                if obj["age"]: meta_parts.append(f"Age: {obj['age']}")
+                if obj["jobtitle"]: meta_parts.append(f"Job: {obj['jobtitle']}")
+                if obj["province"]: meta_parts.append(f"Region: {obj['province']}")
+                if meta_parts:
+                    st.markdown("*" + " | ".join(meta_parts) + "*")
 
-# Sampling
-def get_standard_samples(texts_by_group, n_samples=5, seed=None):
-    """Get standard random samples with improved validation"""
-    if seed is not None:
-        np.random.seed(seed)
+                st.write(obj["text"])
+                # Let user assign to a group
+                assigned_grp_ = st.session_state.open_coding_assignments.get(obj["text"], "Unassigned")
+                grp_list = ["Unassigned"] + [g["name"] for g in st.session_state.open_coding_groups]
+                new_sel = st.selectbox(
+                    "Assign to group:",
+                    options=grp_list,
+                    index=(grp_list.index(assigned_grp_) if assigned_grp_ in grp_list else 0),
+                    key=f"sample_{cat}_{i}"
+                )
+                st.session_state.open_coding_assignments[obj["text"]] = new_sel
 
-    samples_by_group = {}
-
-    for group, texts in texts_by_group.items():
-        # Print debug info
-        print(f"Processing group {group}: {len(texts)} texts")
-
-        # Filter valid texts
-        valid_texts = [
-            text for text in texts
-            if isinstance(text, str) and text.strip() and
-               not pd.isna(text) and text.lower() not in {'nan', 'none', 'n/a', 'na'}
-        ]
-
-        print(f"Valid texts for group {group}: {len(valid_texts)}")
-
-        if valid_texts:
-            n = min(n_samples, len(valid_texts))
-            samples = np.random.choice(valid_texts, size=n, replace=False)
-            samples_by_group[group] = list(samples)
+    if st.button("💾 Save All Coding"):
+        ok = save_coding_state()
+        if ok:
+            st.success("Coding saved successfully.")
         else:
-            samples_by_group[group] = []
-            print(f"No valid texts found for group {group}")
-
-    return samples_by_group
-
-def display_standard_samples(texts_by_group, n_samples=5):
-    """Display standard random samples for each group with improved handling"""
-    st.markdown("### Sample Responses")
-
-    if not texts_by_group:
-        st.warning("No responses available to display.")
-        return
-
-    # Create tabs for each group
-    group_tabs = st.tabs(list(texts_by_group.keys()))
-
-    for tab, group_name in zip(group_tabs, texts_by_group.keys()):
-        with tab:
-            texts = texts_by_group[group_name]
-            if texts:
-                # Filter valid texts
-                valid_texts = [
-                    text for text in texts
-                    if isinstance(text, str) and text.strip() and
-                       not pd.isna(text) and text.lower() not in {'nan', 'none', 'n/a', 'na'}
-                ]
-
-                if valid_texts:
-                    # Get random samples
-                    n = min(n_samples, len(valid_texts))
-                    if st.session_state.get('sample_seed') is not None:
-                        np.random.seed(st.session_state.sample_seed)
-                    samples = np.random.choice(valid_texts, size=n, replace=False)
-
-                    # Display samples
-                    st.write(f"Showing {n} of {len(valid_texts)} responses")
-                    for i, sample in enumerate(samples, 1):
-                        with st.expander(f"Response {i}", expanded=True):
-                            st.write(sample)
-                else:
-                    st.warning("No valid responses available for this group.")
-            else:
-                st.warning(f"No responses available for {group_name}")
-
-# Charting
-def safe_plotly_chart(figure, container, message="Unable to display visualization"):
-    """Safely display a Plotly figure with error handling"""
-    if figure is not None:
-        try:
-            if not isinstance(figure, go.Figure):
-                container.warning("Invalid visualization data")
-                return
-            container.plotly_chart(figure, use_container_width=True)
-        except Exception as e:
-            container.warning(message)
-    else:
-        container.warning("No data available for visualization")
-
-def find_word_in_responses(texts_by_group, search_word):
-    """
-    Find all responses containing a specific word across all groups.
-
-    Parameters:
-    - texts_by_group: dict -> Dictionary with group names as keys and lists of texts as values
-    - search_word: str -> Word to search for
-
-    Returns:
-    - dict -> Dictionary with group names as keys and lists of matching responses as values
-    """
-    matching_responses = defaultdict(list)
-    search_word = search_word.lower()
-
-    for group, texts in texts_by_group.items():
-        for text in texts:
-            if isinstance(text, str) and search_word in text.lower():
-                matching_responses[group].append(text)
-
-    return dict(matching_responses)
-
-# Synonyms
-def add_synonym_management_to_sidebar():
-    """Add synonym management controls to the sidebar."""
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("🔗 Synonym Groups Management")
-
-    # Initialize synonym groups in session state if not present
-    if 'synonym_groups' not in st.session_state:
-        st.session_state.synonym_groups = defaultdict(set)
-
-    # Add new synonym group
-    new_group = st.sidebar.text_input("Enter new group name (e.g., 'money')")
-    new_synonyms = st.sidebar.text_area(
-        "Enter synonyms (one per line)",
-        help="These terms will be treated as equivalent to the group name"
-    )
-
-    if st.sidebar.button("Add Synonym Group") and new_group and new_synonyms:
-        group_name = new_group.lower().strip()
-        synonyms = {word.lower().strip() for word in new_synonyms.split('\n') if word.strip()}
-        st.session_state.synonym_groups[group_name] = synonyms
-        st.sidebar.success(f"Added synonym group '{group_name}' with {len(synonyms)} terms")
-
-    # Display and edit existing groups
-    if st.session_state.synonym_groups:
-        st.sidebar.markdown("### Existing Synonym Groups")
-        for group_name, synonyms in dict(st.session_state.synonym_groups).items():
-            with st.sidebar.expander(f"Group: {group_name}"):
-                st.write("Synonyms:", ", ".join(sorted(synonyms)))
-                if st.button(f"Delete {group_name}", key=f"del_{group_name}"):
-                    del st.session_state.synonym_groups[group_name]
-                    st.rerun()
-
-def save_synonym_groups():
-    """Save synonym groups to CSV."""
-    try:
-        rows = []
-        for group_name, synonyms in st.session_state.synonym_groups.items():
-            for synonym in synonyms:
-                rows.append({
-                    'group_name': group_name,
-                    'synonym': synonym
-                })
-
-        df = pd.DataFrame(rows)
-        df.to_csv('synonym_groups.csv', index=False)
-        st.success("Saved synonym groups to synonym_groups.csv")
-    except Exception as e:
-        st.error(f"Error saving synonym groups: {e}")
-
-def load_synonym_groups(file):
-    """Load synonym groups from CSV."""
-    try:
-        df = pd.read_csv(file)
-        new_groups = defaultdict(set)
-
-        for _, row in df.iterrows():
-            if pd.notna(row['group_name']) and pd.notna(row['synonym']):
-                group_name = str(row['group_name']).lower().strip()
-                synonym = str(row['synonym']).lower().strip()
-                if group_name and synonym:
-                    new_groups[group_name].add(synonym)
-
-        st.session_state.synonym_groups = new_groups
-        st.success(f"Loaded {len(new_groups)} synonym groups")
-    except Exception as e:
-        st.error(f"Error loading synonym groups: {e}")
-
-def process_text_with_synonyms(text, stopwords=None, synonym_groups=None):
-    """Process text with synonym group support."""
-    if pd.isna(text) or not isinstance(text, (str, bytes)):
-        return ""
-
-    # Remove HTML tags and clean text
-    text = re.sub(r'<[^>]+>', '', str(text))
-    text = re.sub(r'[^\w\s]', ' ', text.lower())
-    text = re.sub(r'\s+', ' ', text).strip()
-
-    # Split into words
-    words = [word.strip() for word in text.split() if word.strip()]
-
-    # Replace synonyms with their group names
-    if synonym_groups:
-        processed_words = []
-        for word in words:
-            replaced = False
-            for group_name, synonyms in synonym_groups.items():
-                if word in synonyms:
-                    processed_words.append(group_name)
-                    replaced = True
-                    break
-            if not replaced:
-                processed_words.append(word)
-        words = processed_words
-
-    # Remove stopwords
-    if stopwords:
-        words = [word for word in words if word not in stopwords]
-
-    return ' '.join(words)
+            st.error("Error saving coding.")
 
 
-# Word Clouds
+###############################################################################
+# 7) WORDCLOUD FUNCTIONS (SUB-TABS)
+###############################################################################
+
 def generate_wordcloud_data(texts, stopwords=None, synonyms=None, max_words=200):
-    """Generate word frequency data for both static and interactive wordclouds"""
+    """Return (joined_text, sorted_freq)"""
+    from collections import Counter
     if not texts:
         return None, None
 
-    processed_texts = []
-    for text in texts:
-        if not isinstance(text, str):
-            continue
-        processed = process_text(text, stopwords, synonyms)
-        if processed:
-            processed_texts.append(processed)
-
-    if not processed_texts:
+    processed = []
+    for t in texts:
+        if isinstance(t, str):
+            clean = process_text(t, stopwords=stopwords, synonym_groups=synonyms)
+            if clean: processed.append(clean)
+    if not processed:
         return None, None
 
-    text = ' '.join(processed_texts)
+    joined = ' '.join(processed)
+    words = joined.split()
+    freq = Counter(words)
+    sorted_freq = sorted(freq.items(), key=lambda x: x[1], reverse=True)[:max_words]
+    return joined, sorted_freq
 
-    # Generate word frequencies
-    words = text.split()
-    word_freq = Counter(words)
-
-    # Sort and limit to max_words
-    sorted_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:max_words]
-
-    return text, sorted_words
-
-
-def create_interactive_wordcloud(word_freq, colormap='viridis', title='', highlight_words=None):
-    """
-    Create an interactive Plotly wordcloud visualization with draggable words arranged in a network-like layout.
-    Now starts more spread out and includes a 'hover' feature showing frequency and closest terms in a fancy table format.
-    """
+def create_interactive_wordcloud(word_freq, colormap='viridis', highlight_words=None, title=''):
+    """Plotly-based interactive wordcloud scatter plot."""
     if not word_freq:
         return None
 
+    import plotly.graph_objects as go
+    import plotly.express as px
+    import numpy as np
+
     words, freqs = zip(*word_freq)
-    max_freq = max(freqs)
-    n_words = len(words)
+    max_f = max(freqs)
+    sizes = [20 + (f/max_f)*60 for f in freqs]
+    def pick_color(word, freq_):
+        if highlight_words and word.lower() in highlight_words:
+            return "red"
+        return px.colors.sample_colorscale(colormap, freq_/max_f)[0]
+    colors = [pick_color(w, f) for w, f in zip(words, freqs)]
 
-    # Calculate sizes for words (normalized)
-    sizes = [20 + (f / max_freq) * 60 for f in freqs]  # Slightly smaller size range
-
-    # Create color scale
-    if highlight_words:
-        colors = [
-            'red' if w.lower() in highlight_words else
-            px.colors.sample_colorscale(colormap, f / max_freq)[0]
-            for w, f in zip(words, freqs)
-        ]
-    else:
-        colors = [px.colors.sample_colorscale(colormap, f / max_freq)[0] for f in freqs]
-
-    # Calculate initial positions using polar coordinates
-    # Increase spread by multiplying radius by a factor
+    # spiral
     positions = []
-    golden_ratio = (1 + 5 ** 0.5) / 2
-    for i, freq in enumerate(freqs):
-        # Radius increases as frequency decreases; multiply by 1.5 for extra spacing
-        radius = 1.5 * (1 - freq / max_freq) * min(800, 100 * (n_words / 10))
-        radius *= (0.8 + 0.4 * np.random.random())  # Add some randomness
+    golden_ratio = (1 + 5**0.5)/2
+    for i, f_val in enumerate(freqs):
+        r = 1.5*(1 - f_val/max_f)*300
+        theta = i * 2*np.pi*golden_ratio
+        x = r*np.cos(theta)
+        y = r*np.sin(theta)
+        positions.append((x,y))
+    x_vals, y_vals = zip(*positions)
 
-        # Angle based on golden ratio for better distribution
-        theta = i * 2 * np.pi * golden_ratio
+    def nearest_terms(idx, k=3):
+        xi, yi = positions[idx]
+        dists = []
+        for j, (xx, yy) in enumerate(positions):
+            if j!=idx:
+                d_sq = (xi-xx)**2 + (yi-yy)**2
+                dists.append((d_sq,j))
+        dists.sort(key=lambda x: x[0])
+        neigh = [words[d[1]] for d in dists[:k]]
+        return ", ".join(neigh)
 
-        x = radius * np.cos(theta)
-        y = radius * np.sin(theta)
-        positions.append((x, y))
-
-    x_pos, y_pos = zip(*positions)
-
-    # Identify the nearest terms for each word (by Euclidean distance in the 2D layout)
-    def find_closest_words(idx, k=3):
-        distances = []
-        x_i, y_i = positions[idx]
-        for j, (x_j, y_j) in enumerate(positions):
-            if j != idx:
-                dist = (x_i - x_j) ** 2 + (y_i - y_j) ** 2
-                distances.append((dist, j))
-        # Sort by distance and take k nearest
-        distances.sort(key=lambda x: x[0])
-        nearest_indices = [d[1] for d in distances[:k]]
-        # Build a string of top k nearest word names
-        return ", ".join([words[nid] for nid in nearest_indices])
-
-    # Build customdata so hover can display more info
-    # customdata[i] = (freq, word, closest_words)
     custom_data = []
     for i, w in enumerate(words):
-        closest_str = find_closest_words(i, k=3)
-        custom_data.append((freqs[i], w, closest_str))
+        custom_data.append((freqs[i], w, nearest_terms(i,3)))
 
-    # Create figure with dragmode
     fig = go.Figure()
-
-    # Scatter trace for words
     fig.add_trace(go.Scatter(
-        x=x_pos,
-        y=y_pos,
+        x=x_vals,
+        y=y_vals,
         text=words,
-        textposition="middle center",
         mode='text+markers',
-        marker=dict(
-            size=1,
-            color='rgba(0,0,0,0)'  # Invisible markers, needed for dragging
-        ),
-        textfont=dict(
-            size=sizes,
-            color=colors
-        ),
-        # customdata: [ (frequency, word, closest_words), ... ]
+        textposition='middle center',
+        marker=dict(size=1, color='rgba(0,0,0,0)'),
+        textfont=dict(size=sizes, color=colors),
         customdata=custom_data,
         hovertemplate=(
             "<b>%{customdata[1]}</b><br>"
-            "Frequency: %{customdata[0]:.0f}<br>"
+            "Frequency: %{customdata[0]}<br>"
             "Closest Terms: %{customdata[2]}<extra></extra>"
-        ),
-        name=''
+        )
     ))
-
-    # Update layout for better interactivity
     fig.update_layout(
-        title=dict(
-            text=title,
-            x=0.5,
-            xanchor='center'
-        ),
+        title=title,
         showlegend=False,
         hovermode='closest',
-        dragmode='pan',
-        width=1000,
-        height=800,
-        xaxis=dict(
-            showgrid=False,
-            showticklabels=False,
-            zeroline=False,
-            range=[-1000, 1000]  # Adjust based on your needs
-        ),
-        yaxis=dict(
-            showgrid=False,
-            showticklabels=False,
-            zeroline=False,
-            range=[-1000, 1000],
-            scaleanchor='x',
-            scaleratio=1
-        ),
-        plot_bgcolor='rgba(0,0,0,0)',
-        paper_bgcolor='rgba(0,0,0,0)',
-        margin=dict(t=50, b=50, l=50, r=50),
-        updatemenus=[
-            dict(
-                type='buttons',
-                showactive=False,
-                buttons=[
-                    dict(
-                        label='Reset View',
-                        method='relayout',
-                        args=[{
-                            'xaxis.range': [-1000, 1000],
-                            'yaxis.range': [-1000, 1000]
-                        }]
-                    )
-                ],
-                x=0.05,
-                y=1.05,
-            )
-        ]
+        width=1000, height=800,
+        xaxis=dict(showgrid=False, showticklabels=False, zeroline=False, range=[-1000,1000]),
+        yaxis=dict(showgrid=False, showticklabels=False, zeroline=False, range=[-1000,1000],
+                   scaleanchor='x', scaleratio=1),
+        margin=dict(t=50,b=50,l=50,r=50)
     )
-
     return fig
 
+def add_download_buttons_wc(fig_or_wc, word_freq, prefix="wordcloud", suffix=""):
+    """Add PNG & CSV downloads for a WordCloud or Matplotlib figure + frequencies."""
+    buffer = BytesIO()
+    if hasattr(fig_or_wc, 'savefig'):
+        # it's a figure
+        fig_or_wc.savefig(buffer, format='png', dpi=300, bbox_inches='tight')
+    elif hasattr(fig_or_wc, 'to_image'):
+        # it's a WordCloud object
+        fig_or_wc.to_image().save(buffer, format='PNG', optimize=True)
+    else:
+        st.warning("No valid image data to download.")
+        return
+    buffer.seek(0)
+    fname_png = f"{prefix}{('_'+suffix if suffix else '')}.png"
+    st.download_button(
+        label="💾 Download PNG",
+        data=buffer,
+        file_name=fname_png,
+        mime="image/png",
+        use_container_width=True
+    )
+    if word_freq:
+        df = pd.DataFrame(word_freq, columns=['word','frequency'])
+        csv_data = df.to_csv(index=False).encode('utf-8')
+        fname_csv = f"{prefix}_freq{('_'+suffix if suffix else '')}.csv"
+        st.download_button(
+            label="📊 Download Frequencies (CSV)",
+            data=csv_data,
+            file_name=fname_csv,
+            mime="text/csv",
+            use_container_width=True
+        )
 
-def generate_wordcloud(texts, stopwords=None, synonyms=None, colormap='viridis',
-                       highlight_words=None, return_freq=False):
-    """Generate both static and interactive wordclouds"""
-    # Generate word frequency data
-    text, word_freq = generate_wordcloud_data(texts, stopwords, synonyms)
-    if not text or not word_freq:
+
+def generate_wordcloud(
+    texts, stopwords=None, synonyms=None, colormap='viridis',
+    highlight_words=None, return_freq=False
+):
+    """Return (wc_static, wc_interactive, freq) or None if empty."""
+    joined, freq_ = generate_wordcloud_data(texts, stopwords, synonyms)
+    if not joined or not freq_:
         return None, None, None
 
-    try:
-        def color_func(word, *args, **kwargs):
-            if highlight_words and word.lower() in highlight_words:
-                return "hsl(0, 100%, 50%)"
-            return None
+    def color_func(word, *args, **kwargs):
+        if highlight_words and word.lower() in highlight_words:
+            return "hsl(0, 100%, 50%)"
+        return None
 
-        wc = WordCloud(
+    try:
+        wc_obj = WordCloud(
             width=1200,
             height=600,
             background_color='white',
@@ -1397,115 +1017,35 @@ def generate_wordcloud(texts, stopwords=None, synonyms=None, colormap='viridis',
             color_func=color_func if highlight_words else None,
             stopwords=stopwords if stopwords else set(),
             collocations=False,
-            min_word_length=2,
-            prefer_horizontal=0.7,
             max_words=200
-        ).generate(text)
+        ).generate(joined)
 
-        # Create interactive version
-        interactive_wc = create_interactive_wordcloud(
-            word_freq,
-            colormap,
-            highlight_words=highlight_words
-        )
-
+        # Interactive
+        iwc = create_interactive_wordcloud(freq_, colormap, highlight_words)
         if return_freq:
-            return wc, interactive_wc, word_freq
-        return wc, interactive_wc, None
-
+            return wc_obj, iwc, freq_
+        else:
+            return wc_obj, iwc, None
     except Exception as e:
-        print(f"Error generating wordcloud: {str(e)}")
+        st.error(f"Error generating wordcloud: {e}")
         return None, None, None
 
-
-def generate_synonym_group_wordclouds(texts, stopwords=None, synonym_groups=None, colormap='viridis'):
-    """Generate separate wordclouds for each synonym group"""
-    if not texts or not synonym_groups:
+def generate_comparison_wordcloud(
+    texts1, texts2, stopwords=None, synonyms=None,
+    colormap='viridis', highlight_words=None,
+    main_title="", subtitle="", source_text="",
+    label1="Group 1", label2="Group 2"
+):
+    """
+    Create a side-by-side comparison of two sets of texts.
+    Returns (fig_static, fig_interactive) or (None, None) if missing data.
+    """
+    txt1, wf1 = generate_wordcloud_data(texts1, stopwords, synonyms)
+    txt2, wf2 = generate_wordcloud_data(texts2, stopwords, synonyms)
+    if not txt1 or not txt2:
         return None, None
 
-    n_groups = len(synonym_groups)
-    if n_groups == 0:
-        return None, None
-
-    # Create static figure
-    rows = int(np.ceil(np.sqrt(n_groups)))
-    cols = int(np.ceil(n_groups / rows))
-    fig_static = plt.figure(figsize=(16, 16))
-    gs = fig_static.add_gridspec(rows, cols)
-
-    # Create interactive figure
-    fig_interactive = make_subplots(
-        rows=rows,
-        cols=cols,
-        subplot_titles=list(synonym_groups.keys())
-    )
-
-    for idx, (group_name, synonyms) in enumerate(synonym_groups.items()):
-        row = idx // cols + 1
-        col = idx % cols + 1
-
-        # Process texts for this group
-        text, word_freq = generate_wordcloud_data(
-            texts,
-            stopwords,
-            {group_name: synonyms}
-        )
-
-        if text and word_freq:
-            # Static wordcloud
-            ax = fig_static.add_subplot(gs[idx])
-            wc = WordCloud(
-                width=800,
-                height=400,
-                background_color='white',
-                colormap=colormap,
-                stopwords=stopwords if stopwords else set(),
-                collocations=False,
-                min_word_length=2
-            ).generate(text)
-
-            ax.imshow(wc)
-            ax.axis('off')
-            ax.set_title(f"Group: {group_name}\nSynonyms: {', '.join(synonyms)}")
-
-            # Interactive wordcloud
-            interactive_wc = create_interactive_wordcloud(
-                word_freq,
-                colormap,
-                title=f"Group: {group_name}"
-            )
-            for trace in interactive_wc.data:
-                fig_interactive.add_trace(trace, row=row, col=col)
-
-            # Update subplot layout
-            fig_interactive.update_xaxes(showgrid=False, showticklabels=False, row=row, col=col)
-            fig_interactive.update_yaxes(showgrid=False, showticklabels=False, row=row, col=col)
-
-    # Update layouts
-    fig_static.tight_layout()
-
-    fig_interactive.update_layout(
-        showlegend=False,
-        height=300 * rows,
-        width=400 * cols,
-        title="Synonym Group Wordclouds"
-    )
-
-    return fig_static, fig_interactive
-
-
-def generate_comparison_wordcloud(texts1, texts2, stopwords=None, synonyms=None, colormap='viridis',
-                                  highlight_words=None, main_title="", subtitle="", source_text="",
-                                  label1="Group 1", label2="Group 2"):
-    """Generate both static and interactive comparison wordclouds"""
-    # Generate word frequencies for both groups
-    text1, word_freq1 = generate_wordcloud_data(texts1, stopwords, synonyms)
-    text2, word_freq2 = generate_wordcloud_data(texts2, stopwords, synonyms)
-
-    if not text1 or not text2:
-        return None, None
-
-    # Create static comparison
+    # ---- Static figure ----
     fig_static = plt.figure(figsize=(20, 10))
     gs = fig_static.add_gridspec(1, 2)
     fig_static.patch.set_facecolor('white')
@@ -1515,146 +1055,260 @@ def generate_comparison_wordcloud(texts1, texts2, stopwords=None, synonyms=None,
             return "hsl(0, 100%, 50%)"
         return None
 
-    # Generate static wordclouds
-    for i, (text, label) in enumerate([(text1, label1), (text2, label2)]):
-        ax = fig_static.add_subplot(gs[i])
-        wc = WordCloud(
-            width=1500,
-            height=1000,
-            background_color="white",
-            colormap=colormap if not highlight_words else None,
-            color_func=color_func if highlight_words else None,
-            stopwords=stopwords if stopwords else set(),
-            collocations=False,
-            max_words=150,
-            max_font_size=200,
-            prefer_horizontal=1,
-            scale=2
-        ).generate(text)
+    # Left
+    ax_left = fig_static.add_subplot(gs[0])
+    wc_left = WordCloud(
+        width=1000, height=800,
+        background_color='white',
+        colormap=colormap if not highlight_words else None,
+        color_func=color_func if highlight_words else None,
+        stopwords=stopwords if stopwords else set(),
+        collocations=False,
+        max_words=150
+    ).generate(txt1)
+    ax_left.imshow(wc_left, interpolation='bilinear')
+    ax_left.axis('off')
+    ax_left.set_title(label1, fontsize=16, fontweight='bold')
 
-        ax.imshow(wc, interpolation="bilinear")
-        ax.axis("off")
-        ax.set_title(label, fontsize=15, fontweight='bold')
+    # Right
+    ax_right = fig_static.add_subplot(gs[1])
+    wc_right = WordCloud(
+        width=1000, height=800,
+        background_color='white',
+        colormap=colormap if not highlight_words else None,
+        color_func=color_func if highlight_words else None,
+        stopwords=stopwords if stopwords else set(),
+        collocations=False,
+        max_words=150
+    ).generate(txt2)
+    ax_right.imshow(wc_right, interpolation='bilinear')
+    ax_right.axis('off')
+    ax_right.set_title(label2, fontsize=16, fontweight='bold')
 
-    # Create interactive comparison
-    fig_interactive = make_subplots(
-        rows=1,
-        cols=2,
-        subplot_titles=[label1, label2]
-    )
-
-    # Add interactive wordclouds
-    interactive_wc1 = create_interactive_wordcloud(word_freq1, colormap, highlight_words=highlight_words)
-    interactive_wc2 = create_interactive_wordcloud(word_freq2, colormap, highlight_words=highlight_words)
-
-    for trace in interactive_wc1.data:
-        fig_interactive.add_trace(trace, row=1, col=1)
-    for trace in interactive_wc2.data:
-        fig_interactive.add_trace(trace, row=1, col=2)
-
-    # Update layouts
     if subtitle:
         fig_static.suptitle(f"{main_title}\n{subtitle}", y=0.95)
     elif main_title:
         fig_static.suptitle(main_title, y=0.95)
+    if source_text:
+        fig_static.text(0.01, 0.01, f"Source: {source_text}", color='gray')
+
+    # ---- Interactive figure ----
+    fig_interactive = make_subplots(rows=1, cols=2, subplot_titles=[label1, label2])
+    iwc1 = create_interactive_wordcloud(wf1, colormap, highlight_words=highlight_words)
+    iwc2 = create_interactive_wordcloud(wf2, colormap, highlight_words=highlight_words)
+    if iwc1:
+        for trace in iwc1.data:
+            fig_interactive.add_trace(trace, row=1, col=1)
+    if iwc2:
+        for trace in iwc2.data:
+            fig_interactive.add_trace(trace, row=1, col=2)
 
     fig_interactive.update_layout(
         title={
-            'text': f"{main_title}<br><sup>{subtitle}</sup>" if subtitle else main_title,
-            'y': 0.95,
-            'x': 0.5,
-            'xanchor': 'center',
-            'yanchor': 'top'
+            'text': (f"{main_title}<br><sup>{subtitle}</sup>" if subtitle else main_title),
+            'x': 0.5, 'y': 0.95,
+            'xanchor': 'center', 'yanchor': 'top'
         },
         showlegend=False,
-        width=1600,
-        height=800
+        width=1600, height=800
     )
-
-    # Add source text if provided
     if source_text:
-        fig_static.text(0.05, 0.02, f"Source: {source_text}", fontsize=10, color='gray')
         fig_interactive.add_annotation(
-            text=f"Source: {source_text}",
-            xref="paper",
-            yref="paper",
-            x=0.02,
-            y=-0.05,
-            showarrow=False,
-            font=dict(size=10, color='gray'),
-            align="left"
+            text=f"Source: {source_text}", xref="paper", yref="paper",
+            x=0.01, y=-0.05, showarrow=False, font=dict(size=10, color='gray')
         )
 
     return fig_static, fig_interactive
 
-def generate_multi_group_wordcloud(texts_by_group, stopwords=None, synonyms=None, colormap='viridis',
-                                   highlight_words=None, main_title="", subtitle="", source_text=""):
-    """Generate both static and interactive multi-group wordclouds"""
-    if len(texts_by_group) > 4:
-        raise ValueError("Maximum 4 groups supported")
+def generate_combined_comparison_wordcloud(
+    texts_by_group,
+    categories_side1,
+    categories_side2,
+    stopwords=None,
+    synonyms=None,
+    colormap='viridis',
+    highlight_words=None,
+    return_freq=False
+):
+    """
+    Compare two sets of categories by merging them into "left" vs. "right" for a big side-by-side wordcloud.
+    texts_by_group: dict { category_name -> [list of strings] }
+    categories_side1: list of categories (keys in texts_by_group) for left side
+    categories_side2: list of categories (keys in texts_by_group) for right side
 
-    # Generate static version
-    fig_static = plt.figure(figsize=(16, 14))
-    gs = fig_static.add_gridspec(2, 2)
+    return_freq: if True, return {'left': [...], 'right': [...]}
+    """
+    left_texts = []
+    for cat in categories_side1:
+        if cat in texts_by_group:
+            left_texts += texts_by_group[cat]
+
+    right_texts = []
+    for cat in categories_side2:
+        if cat in texts_by_group:
+            right_texts += texts_by_group[cat]
+
+    if not left_texts or not right_texts:
+        return None, None, None if return_freq else (None, None)
+
+    txt_left, freq_left = generate_wordcloud_data(left_texts, stopwords, synonyms)
+    txt_right, freq_right = generate_wordcloud_data(right_texts, stopwords, synonyms)
+    if not txt_left or not txt_right:
+        return None, None, None if return_freq else (None, None)
+
+    # STATIC
+    fig_static = plt.figure(figsize=(24, 12))
+    gs = fig_static.add_gridspec(1, 2, wspace=0.1)
     fig_static.patch.set_facecolor('white')
-
-    # Create interactive figure
-    fig_interactive = make_subplots(
-        rows=2, cols=2,
-        subplot_titles=list(texts_by_group.keys()),
-        vertical_spacing=0.15,
-        horizontal_spacing=0.1
-    )
 
     def color_func(word, *args, **kwargs):
         if highlight_words and word.lower() in highlight_words:
             return "hsl(0, 100%, 50%)"
         return None
 
-    for i, (group_name, texts) in enumerate(texts_by_group.items()):
-        row = i // 2 + 1
-        col = i % 2 + 1
+    # Left
+    ax_left = fig_static.add_subplot(gs[0])
+    wc_left = WordCloud(
+        width=2000, height=1200,
+        background_color='white',
+        colormap=colormap if not highlight_words else None,
+        color_func=color_func if highlight_words else None,
+        stopwords=stopwords if stopwords else set(),
+        collocations=False,
+        max_words=150
+    ).generate(txt_left)
+    ax_left.imshow(wc_left, interpolation='bilinear')
+    ax_left.axis('off')
 
-        # Generate word frequency data
-        text, word_freq = generate_wordcloud_data(texts, stopwords, synonyms)
+    # Right
+    ax_right = fig_static.add_subplot(gs[1])
+    wc_right = WordCloud(
+        width=2000, height=1200,
+        background_color='white',
+        colormap=colormap if not highlight_words else None,
+        color_func=color_func if highlight_words else None,
+        stopwords=stopwords if stopwords else set(),
+        collocations=False,
+        max_words=150
+    ).generate(txt_right)
+    ax_right.imshow(wc_right, interpolation='bilinear')
+    ax_right.axis('off')
 
-        if text and word_freq:
-            # Static wordcloud
-            ax = fig_static.add_subplot(gs[i])
-            wc = WordCloud(
-                width=1500,
-                height=1000,
-                background_color="white",
+    # INTERACTIVE
+    fig_interactive = make_subplots(rows=1, cols=2, horizontal_spacing=0.05)
+    iwc_left = create_interactive_wordcloud(freq_left, colormap, highlight_words=highlight_words)
+    iwc_right = create_interactive_wordcloud(freq_right, colormap, highlight_words=highlight_words)
+    if iwc_left:
+        for trace in iwc_left.data:
+            fig_interactive.add_trace(trace, row=1, col=1)
+    if iwc_right:
+        for trace in iwc_right.data:
+            fig_interactive.add_trace(trace, row=1, col=2)
+
+    fig_interactive.update_layout(
+        showlegend=False,
+        width=2000, height=1000,
+        margin=dict(t=20, b=20, l=20, r=20),
+        template='plotly_white'
+    )
+    fig_interactive.update_xaxes(showgrid=False, showticklabels=False, zeroline=False)
+    fig_interactive.update_yaxes(showgrid=False, showticklabels=False, zeroline=False)
+
+    freq_dict = None
+    if return_freq:
+        freq_dict = {
+            'left': freq_left,
+            'right': freq_right
+        }
+    return fig_static, fig_interactive, freq_dict
+
+def generate_multi_group_wordcloud(
+    texts_by_group, stopwords=None, synonyms=None, colormap='viridis',
+    highlight_words=None, main_title="", subtitle="", source_text="",
+    return_freq=False
+):
+    """
+    Generate up to 4 wordclouds side-by-side (2x2).
+    texts_by_group: dict of {group_name -> list of strings}
+    return_freq: if True, return a dict of group->[(word, freq),...]
+
+    Returns:
+        fig_static, fig_interactive, group_freqs (or None)
+    """
+    if len(texts_by_group) > 4:
+        raise ValueError("Maximum 4 groups supported in this function.")
+
+    group_names = list(texts_by_group.keys())
+    n_groups = len(group_names)
+    if n_groups < 1:
+        return None, None, None
+
+    import math
+    rows = math.ceil(n_groups / 2)
+    cols = 2 if n_groups > 1 else 1
+
+    # Prepare static figure
+    fig_static = plt.figure(figsize=(16, 14))
+    gs = fig_static.add_gridspec(rows, cols)
+    fig_static.patch.set_facecolor('white')
+
+    # Prepare interactive
+    fig_interactive = make_subplots(
+        rows=rows, cols=cols,
+        subplot_titles=group_names,
+        vertical_spacing=0.15, horizontal_spacing=0.1
+    )
+    group_freqs = {} if return_freq else None
+
+    def color_func(word, *args, **kwargs):
+        if highlight_words and word.lower() in highlight_words:
+            return "hsl(0, 100%, 50%)"
+        return None
+
+    idx = 0
+    for g_name in group_names:
+        row = idx // 2 + 1
+        col = idx % 2 + 1
+        idx += 1
+
+        joined_text, word_freq = generate_wordcloud_data(
+            texts_by_group[g_name],
+            stopwords=stopwords,
+            synonyms=synonyms
+        )
+        if not joined_text or not word_freq:
+            continue
+
+        if group_freqs is not None:
+            group_freqs[g_name] = word_freq
+
+        # Static
+        ax = fig_static.add_subplot(gs[idx - 1])
+        try:
+            wc_temp = WordCloud(
+                width=800, height=600,
+                background_color='white',
                 colormap=colormap if not highlight_words else None,
                 color_func=color_func if highlight_words else None,
                 stopwords=stopwords if stopwords else set(),
                 collocations=False,
-                max_words=100,
-                max_font_size=200,
-                prefer_horizontal=1,
-                scale=2
-            ).generate(text)
+                max_words=150,
+                prefer_horizontal=0.7
+            ).generate(joined_text)
+            ax.imshow(wc_temp, interpolation='bilinear')
+            ax.axis('off')
+            ax.set_title(f"{g_name}\n({len(texts_by_group[g_name])} responses)")
+        except Exception as e:
+            ax.text(0.5, 0.5, f"Error: {e}", ha='center', va='center')
 
-            ax.imshow(wc, interpolation="bilinear")
-            ax.axis("off")
-            ax.set_title(f"{group_name}\nTotal responses: {len(texts)}")
-
-            # Interactive wordcloud
-            interactive_wc = create_interactive_wordcloud(
-                word_freq,
-                colormap=colormap,
-                title=group_name,
-                highlight_words=highlight_words
-            )
-
-            for trace in interactive_wc.data:
+        # Interactive
+        iwc = create_interactive_wordcloud(word_freq, colormap, highlight_words=highlight_words)
+        if iwc:
+            for trace in iwc.data:
                 fig_interactive.add_trace(trace, row=row, col=col)
-
-            # Update subplot layout
             fig_interactive.update_xaxes(showgrid=False, showticklabels=False, zeroline=False, row=row, col=col)
             fig_interactive.update_yaxes(showgrid=False, showticklabels=False, zeroline=False, row=row, col=col)
 
-    # Update layouts
     fig_static.tight_layout()
     if subtitle:
         fig_static.suptitle(f"{main_title}\n{subtitle}", y=0.95)
@@ -1662,290 +1316,27 @@ def generate_multi_group_wordcloud(texts_by_group, stopwords=None, synonyms=None
         fig_static.suptitle(main_title, y=0.95)
 
     fig_interactive.update_layout(
-        title={
-            'text': f"{main_title}<br><sup>{subtitle}</sup>" if subtitle else main_title,
-            'y': 0.95,
-            'x': 0.5,
-            'xanchor': 'center',
-            'yanchor': 'top'
-        },
         showlegend=False,
-        width=1600,
-        height=1400,
-        template="plotly_white",
-        margin=dict(t=100, b=50, l=50, r=50)
+        width=1600, height=rows * 600,
+        title=(f"{main_title}<br><sup>{subtitle}</sup>" if subtitle else main_title),
+        template='plotly_white'
     )
-
-    # Add source text if provided
     if source_text:
-        fig_static.text(0.05, 0.02, f"Source: {source_text}", fontsize=10, color='gray')
+        fig_static.text(0.01, 0.01, f"Source: {source_text}", color='gray')
         fig_interactive.add_annotation(
             text=f"Source: {source_text}",
-            xref="paper",
-            yref="paper",
-            x=0.02,
-            y=-0.05,
+            xref="paper", yref="paper",
+            x=0.01, y=-0.05,
             showarrow=False,
-            font=dict(size=10, color='gray'),
-            align="left"
+            font=dict(size=10, color='gray')
         )
 
-    return fig_static, fig_interactive
+    return fig_static, fig_interactive, group_freqs
 
 
-def generate_synonym_group_wordclouds(texts, stopwords=None, synonym_groups=None, colormap='viridis'):
-    """Generate separate wordclouds for each synonym group with both static and interactive versions"""
-    if not texts or not synonym_groups:
-        return None, None
-
-    n_groups = len(synonym_groups)
-    if n_groups == 0:
-        return None, None
-
-    # Create static figure
-    rows = int(np.ceil(np.sqrt(n_groups)))
-    cols = int(np.ceil(n_groups / rows))
-    fig_static = plt.figure(figsize=(16, 16))
-    gs = fig_static.add_gridspec(rows, cols)
-    fig_static.patch.set_facecolor('white')
-
-    # Create interactive figure
-    fig_interactive = make_subplots(
-        rows=rows,
-        cols=cols,
-        subplot_titles=[f"Group: {group}" for group in synonym_groups.keys()],
-        vertical_spacing=0.2,
-        horizontal_spacing=0.1
-    )
-
-    for idx, (group_name, synonyms) in enumerate(synonym_groups.items()):
-        row = idx // cols + 1
-        col = idx % cols + 1
-
-        # Process texts for this group
-        text, word_freq = generate_wordcloud_data(
-            texts,
-            stopwords,
-            {group_name: synonyms}
-        )
-
-        if text and word_freq:
-            # Static wordcloud
-            ax = fig_static.add_subplot(gs[idx])
-            wc = WordCloud(
-                width=800,
-                height=400,
-                background_color='white',
-                colormap=colormap,
-                stopwords=stopwords if stopwords else set(),
-                collocations=False,
-                min_word_length=2,
-                max_words=100
-            ).generate(text)
-
-            ax.imshow(wc)
-            ax.axis('off')
-            ax.set_title(f"Group: {group_name}\nSynonyms: {', '.join(synonyms)}")
-
-            # Interactive wordcloud
-            interactive_wc = create_interactive_wordcloud(
-                word_freq,
-                colormap=colormap,
-                title=f"Group: {group_name}"
-            )
-
-            for trace in interactive_wc.data:
-                fig_interactive.add_trace(trace, row=row, col=col)
-
-            # Update subplot layout
-            fig_interactive.update_xaxes(showgrid=False, showticklabels=False, zeroline=False, row=row, col=col)
-            fig_interactive.update_yaxes(showgrid=False, showticklabels=False, zeroline=False, row=row, col=col)
-
-    # Update layouts
-    fig_static.tight_layout()
-
-    fig_interactive.update_layout(
-        showlegend=False,
-        width=400 * cols,
-        height=300 * rows,
-        template="plotly_white",
-        title={
-            'text': "Synonym Group Wordclouds",
-            'y': 0.98,
-            'x': 0.5,
-            'xanchor': 'center',
-            'yanchor': 'top'
-        }
-    )
-
-    return fig_static, fig_interactive
-
-# Helper function to convert PIL Image to base64 for download
-def get_image_download_link(image, filename, text):
-    buffered = BytesIO()
-    image.save(buffered, format="PNG", optimize=True)
-    img_str = base64.b64encode(buffered.getvalue()).decode()
-    href = f'<a href="data:image/png;base64,{img_str}" download="{filename}">{text}</a>'
-    return href
-
-# Network Graphs
-def create_word_cooccurrence_network(texts, min_edge_weight=2, max_words=50, stopwords=None):
-    """
-    Create a network visualization of word co-occurrences.
-
-    Parameters:
-    - texts: list of strings
-    - min_edge_weight: minimum number of co-occurrences to include edge
-    - max_words: maximum number of words to include in the network
-    - stopwords: set of stopwords to exclude
-
-    Returns:
-    - plotly figure object
-    """
-    # Initialize CountVectorizer
-    vectorizer = CountVectorizer(
-        max_features=max_words,
-        stop_words=list(stopwords) if stopwords else None,
-        token_pattern=r'\b\w+\b'  # Only match whole words
-    )
-
-    # Fit and transform the texts
-    X = vectorizer.fit_transform(texts)
-    words = vectorizer.get_feature_names_out()
-
-    # Calculate word co-occurrence matrix
-    word_cooc = (X.T @ X).toarray()
-    np.fill_diagonal(word_cooc, 0)  # Remove self-connections
-
-    # Create network graph
-    G = nx.Graph()
-
-    # Add nodes (words)
-    word_freq = X.sum(axis=0).A1
-    for i, word in enumerate(words):
-        G.add_node(word, frequency=int(word_freq[i]))
-
-    # Add edges (co-occurrences)
-    for i, j in combinations(range(len(words)), 2):
-        weight = word_cooc[i, j]
-        if weight >= min_edge_weight:
-            G.add_edge(words[i], words[j], weight=weight)
-
-    # Calculate node positions using a force-directed layout
-    pos = nx.spring_layout(G, k=1 / np.sqrt(len(G.nodes())), iterations=50)
-
-    # Create edge trace
-    edge_x = []
-    edge_y = []
-    edge_weights = []
-
-    for edge in G.edges(data=True):
-        x0, y0 = pos[edge[0]]
-        x1, y1 = pos[edge[1]]
-        edge_x.extend([x0, x1, None])
-        edge_y.extend([y0, y1, None])
-        edge_weights.append(edge[2]['weight'])
-
-    edge_trace = go.Scatter(
-        x=edge_x, y=edge_y,
-        line=dict(width=1, color='#888'),
-        hoverinfo='none',
-        mode='lines',
-        opacity=0.5
-    )
-
-    # Create node trace
-    node_x = []
-    node_y = []
-    node_text = []
-    node_sizes = []
-
-    for node in G.nodes():
-        x, y = pos[node]
-        node_x.append(x)
-        node_y.append(y)
-        freq = G.nodes[node]['frequency']
-        node_text.append(f"{node}<br>Frequency: {freq}")
-        node_sizes.append(np.sqrt(freq) * 10)  # Scale node sizes by sqrt of frequency
-
-    node_trace = go.Scatter(
-        x=node_x, y=node_y,
-        mode='markers+text',
-        hoverinfo='text',
-        text=[node for node in G.nodes()],
-        textposition="top center",
-        hovertext=node_text,
-        marker=dict(
-            showscale=True,
-            colorscale='YlOrRd',
-            color=[G.nodes[node]['frequency'] for node in G.nodes()],
-            size=node_sizes,
-            line_width=2
-        )
-    )
-
-    # Create figure
-    fig = go.Figure(
-        data=[edge_trace, node_trace],
-        layout=go.Layout(
-            title='Word Co-occurrence Network',
-            titlefont_size=16,
-            showlegend=False,
-            hovermode='closest',
-            margin=dict(b=20, l=5, r=5, t=40),
-            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-            width=800,
-            height=800,
-            plot_bgcolor='black'
-        )
-    )
-
-    return fig
-
-def get_top_cooccurrences(texts, n_words=20, n_pairs=10, stopwords=None):
-    """
-    Get the top co-occurring word pairs and their frequencies.
-
-    Parameters:
-    - texts: list of strings
-    - n_words: number of words to consider
-    - n_pairs: number of top pairs to return
-    - stopwords: set of stopwords to exclude
-
-    Returns:
-    - pandas DataFrame with word pairs and their co-occurrence counts
-    """
-    vectorizer = CountVectorizer(
-        max_features=n_words,
-        stop_words=list(stopwords) if stopwords else None
-    )
-
-    X = vectorizer.fit_transform(texts)
-    words = vectorizer.get_feature_names_out()
-
-    # Calculate co-occurrence matrix
-    cooc_matrix = (X.T @ X).toarray()
-    np.fill_diagonal(cooc_matrix, 0)
-
-    # Get top co-occurring pairs
-    pairs = []
-    for i in range(len(words)):
-        for j in range(i + 1, len(words)):
-            if cooc_matrix[i, j] > 0:
-                pairs.append({
-                    'word1': words[i],
-                    'word2': words[j],
-                    'cooccurrences': int(cooc_matrix[i, j])
-                })
-
-    # Convert to DataFrame and sort
-    pairs_df = pd.DataFrame(pairs)
-    pairs_df = pairs_df.sort_values('cooccurrences', ascending=False).head(n_pairs)
-
-    return pairs_df
-
-# Topic Model
+###############################################################################
+# 8) TOPIC DISCOVERY
+###############################################################################
 def create_topic_distance_map(topic_model, processed_texts):
     """Create interactive topic distance visualization."""
     # Get topic embeddings
@@ -2121,7 +1512,9 @@ def create_topic_evolution(topic_model, texts_by_group):
 
     return None
 
-# Sentiment Analyses
+###############################################################################
+# 9) SENTIMENT ANALYSES
+###############################################################################
 def analyze_sentiment(text):
     """
     Analyze sentiment of text using VADER.
@@ -2414,7 +1807,9 @@ def analyze_group_sentiment(texts_by_group):
         logging.error(f"Error in sentiment analysis: {str(e)}")
         return {}
 
-# Theme Evolution
+###############################################################################
+# 10) THEMATIC EVOLUTION
+###############################################################################
 def calculate_theme_evolution(texts_by_group, num_themes=5, min_freq=3):
     """Calculate the evolution of themes across groups."""
     groups = sorted(texts_by_group.keys())
@@ -2572,1316 +1967,570 @@ def create_theme_heatmap(evolution_data):
 
     return fig
 
-# Sidebar configuration
-# Main app
-st.title('📊 Text Analysis Dashboard')
-with st.expander("ℹ️ About this dashboard", expanded=False):
-    st.write('Analyze open-text responses across all surveys')
-    st.markdown("""
-    This dashboard provides tools for:
-    - Visualizing text data through word clouds
-    - Analyzing word frequencies and relationships
-    - Discovering topics and themes
-    - Analyzing sentiment
-    - Tracking theme evolution
-    """)
 
+###############################################################################
+# 11) APP LAYOUT (No Nested Expanders, Improved Aesthetics & Error Locations)
+###############################################################################
 
-initialize_stopwords()
-# Sidebar configuration
+st.markdown("""
+<style>
+body {
+    background-color: #FBFBFB;
+    color: #333;
+}
+.sidebar .sidebar-content {
+    background-color: #FFFFFF;
+}
+.block-container {
+    padding: 1.5rem;
+}
+h1, h2, h3, h4 {
+    color: #2C3E50;
+    font-family: "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+}
+.dataframe tbody tr:nth-child(even) {
+    background-color: #F7F9FB;
+}
+</style>
+""", unsafe_allow_html=True)
+
+st.title("📊 Text Analysis Dashboard")
+
+# ----------------------------------------------------------------
+# SIDEBAR: FILE LOADER & ANALYSIS CHOICES
+# ----------------------------------------------------------------
 with st.sidebar:
-    st.header("Analysis Settings")
+    st.header("File / Data Selection")
+    file_up = st.file_uploader("Upload Excel File", type=['xlsx'])
+    if file_up and not st.session_state.file_processed:
+        with st.spinner("Loading data..."):
+            qm, rd, ov, gc = load_excel_file(file_up, chosen_survey="All")
+            if qm is not None and rd is not None:
+                st.session_state.data = {
+                    'qmap': qm,
+                    'responses_dict': rd,
+                    'open_var_options': ov,
+                    'grouping_columns': gc
+                }
+                st.session_state.file_processed = True
+                st.rerun()
+            else:
+                st.error("Invalid file or missing 'question_mapping' sheet. Please verify.")
 
-    # Step 1) File upload
-    uploaded_file = st.file_uploader("Upload Excel file", type=['xlsx'])
+    if st.session_state.file_processed:
+        var_opts = st.session_state.data['open_var_options']
+        grp_cols = st.session_state.data['grouping_columns']
 
-    # Initialize placeholders to avoid errors if no file is uploaded yet
-    question_mapping = None
-    responses_dict = None
-    open_var_options = None
-    grouping_columns = []
-
-    # Step 2) If user uploaded a file, let them pick which sheet(s) to load
-    if uploaded_file:
-        excel_file = pd.ExcelFile(uploaded_file)
-        valid_sheets = [s for s in excel_file.sheet_names if s != 'question_mapping']
-
-        # Let the user pick "All" or a single survey from valid_sheets
-        chosen_survey = st.selectbox(
-            "Choose a survey to load:",
-            options=["All"] + valid_sheets
-        )
-
-        # Then call your modified load_excel_file function
-        question_mapping, responses_dict, open_var_options, grouping_columns = load_excel_file(
-            uploaded_file,
-            chosen_survey
-        )
-
-    # Step 3) Only show these controls once data is actually loaded
-    if question_mapping is not None and responses_dict is not None and open_var_options:
-
-        st.markdown("---")
-        st.subheader("📝 Variable Selection")
-
-        variable = st.selectbox(
-            "Select Open-ended Variable",
-            options=list(open_var_options.keys()),
-            format_func=lambda x: open_var_options[x],
-            help="Variables ending with _open"
-        )
-
-        base_var = variable.replace('_open', '')
-        other_open_vars = [var for var in open_var_options.keys() if var != variable]
-
-        st.markdown("---")
-        st.subheader("🔄 Grouping Options")
-        group_by = st.selectbox(
-            "Group responses by",
-            options=['None'] + grouping_columns,
-            help="Select any column to group by."
-        )
-
-        # Add stopword management
-        render_stopwords_management()
-
-        st.markdown("---")
-        st.subheader("🎨 Wordcloud Settings")
-        colormap = st.selectbox(
-            "Color scheme",
-            ['viridis', 'plasma', 'inferno', 'magma', 'cividis']
-        )
-
-        highlight_words_input = st.text_area(
-            "Highlight Words (one per line)",
-            help="Enter words to highlight in red"
-        )
-        highlight_words = set(
-            word.strip().lower()
-            for word in highlight_words_input.split('\n')
-            if word.strip()
-        )
-
-        st.markdown("---")
-        st.subheader("🔍 Search Responses")
-        search_word = st.text_input(
-            "Search for a specific word",
-            help="Enter a word to find sample responses containing it"
-        )
-
-        # Add synonym management
-        add_synonym_management_to_sidebar()
-
-
-if uploaded_file:
-    if question_mapping is not None and responses_dict is not None and open_var_options and variable:
-        # Show response counts by survey/group
-        st.markdown("### Response Counts")
-        responses_by_survey = get_responses_for_variable(responses_dict, variable, group_by)
-
-        if not responses_by_survey:
-            st.warning("No responses found for this variable in any survey")
-            st.stop()
-
-        for survey_id, responses in responses_by_survey.items():
-            st.write(f"{survey_id}: {len(responses)} responses")
-
-        # Initialize session state for tab persistence
-        if 'current_tab' not in st.session_state:
-            st.session_state.current_tab = 0
-
-        # Create tabs
-        tab_names = [
-            "🗂️ Open Coding",
-            "🎨 Word Cloud",
-            "📊 Word Analysis",
-            "🔍 Topic Discovery",
-            "❤️ Sentiment Analysis",
-            "🌊 Theme Evolution"
+        # Choose type of analysis
+        st.markdown("**Choose Analysis**")
+        analyses = [
+            "Open Coding",
+            "Word Cloud",
+            "Word Analysis",
+            "Topic Discovery",
+            "Sentiment Analysis",
+            "Theme Evolution"
         ]
-
-        tabs = st.tabs(tab_names)
-
-        # Open Coding
-        with tabs[0]:
-            render_open_coding_tab(
-                variable=variable,
-                responses_dict=responses_dict,
-                open_var_options=open_var_options,
-                grouping_columns=grouping_columns
-            )
-
-        # Word Cloud Tab
-        with tabs[1]:
-            with st.expander("🎨 About Word Cloud Visualization", expanded=False):
-                st.markdown("""
-                Word clouds provide an intuitive visual representation of your text data where:
-                - **Larger words** appear more frequently in your responses
-                - **Colors** help distinguish between different words
-                - **Positioning** is optimized for visual appeal
-
-                **Key Features:**
-                - 🔄 Interactive and static visualization options
-                - 📊 Frequency analysis and hover details
-                - 🎯 Word highlighting capabilities
-                - 🔍 Multiple comparison views
-                - 💾 Downloadable high-quality images
-                """)
-
-            # Display full question
-            st.markdown("""
-            <style>
-                .question-box {
-                    border: 2px solid #4CAF50;
-                    border-radius: 10px;
-                    padding: 20px;
-                    background-color: #f8f9fa;
-                    margin: 10px 0;
-                }
-                .question-label {
-                    color: #2E7D32;
-                    font-size: 1.2em;
-                    margin-bottom: 10px;
-                    font-weight: bold;
-                }
-                .question-text {
-                    color: #1a1a1a;
-                    font-size: 1.1em;
-                    line-height: 1.5;
-                    font-weight: 600;
-                }
-            </style>
-            """, unsafe_allow_html=True)
-
-            st.markdown(f"""
-            <div class="question-box">
-                <div class="question-label">Primary Question</div>
-                <div class="question-text">{open_var_options[variable]}</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            # Common settings in a clean format
-            with st.container():
-                col1, col2 = st.columns(2)
-                with col1:
-                    viz_type = st.radio(
-                        "📊 Select visualization type",
-                        ["Single Wordcloud", "Multi-group Comparison (2x2)",
-                         "Side-by-side Comparison", "Synonym Groups"],
-                        help="Choose how to display your wordclouds"
-                    )
-                with col2:
-                    wordcloud_title = st.text_input("📝 Title (optional)", "")
-                    subtitle = st.text_input("✏️ Subtitle (optional)", "")
-                    source_text = st.text_input("📚 Source text (optional)", "")
-
-            if viz_type == "Single Wordcloud":
-                for survey_id, responses in responses_by_survey.items():
-                    if responses:
-                        st.markdown(f"### 📊 Analysis for {survey_id}")
-
-                        # Debug information in a collapsible section
-                        with st.expander("ℹ️ Response Statistics", expanded=False):
-                            st.write(f"Total responses: {len(responses)}")
-                            valid_responses = [r for r in responses if isinstance(r, str) and r.strip()]
-                            st.write(f"Valid responses: {len(valid_responses)}")
-                            st.write(f"Processed stopwords: {len(st.session_state.custom_stopwords)}")
-
-                        try:
-                            # Clean stopwords
-                            clean_stopwords = {str(word).lower() for word in st.session_state.custom_stopwords
-                                               if word is not None and not isinstance(word, float)}
-
-                            # Generate wordclouds
-                            static_wc, interactive_wc, word_freq = generate_wordcloud(
-                                valid_responses,
-                                clean_stopwords,
-                                st.session_state.synonym_groups,
-                                colormap=colormap,
-                                highlight_words=highlight_words,
-                                return_freq=True
-                            )
-
-                            if interactive_wc and static_wc:
-                                # Create tabs for different views
-                                view_tabs = st.tabs([
-                                    "📸 Static View",
-                                    "🔄 Interactive View",
-                                    "📊 Frequency Analysis"
-                                ])
-
-                                # Static View Tab
-                                with view_tabs[0]:
-                                    fig, ax = plt.subplots(figsize=(12, 6))
-                                    ax.imshow(static_wc)
-                                    ax.axis('off')
-                                    if wordcloud_title:
-                                        plt.title(f"{wordcloud_title} - {survey_id}", fontsize=16, pad=20)
-
-                                    st.pyplot(fig)
-                                    plt.close()
-
-                                    # Download button in a clean container
-                                    col1, col2, col3 = st.columns([1, 2, 1])
-                                    with col2:
-                                        buffer = BytesIO()
-                                        # Convert WordCloud to PIL Image first
-                                        static_wc.to_image().save(buffer, format='PNG', optimize=True)
-                                        buffer.seek(0)
-
-                                        st.download_button(
-                                            label="💾 Download High-Quality Image",
-                                            data=buffer,
-                                            file_name=f"{variable}_wordcloud_{survey_id}.png",
-                                            mime="image/png",
-                                            use_container_width=True
-                                        )
-
-                                # Interactive View Tab
-                                with view_tabs[1]:
-                                    st.plotly_chart(interactive_wc, use_container_width=True)
-
-                                    with st.expander("ℹ️ Interactive Features", expanded=False):
-                                        st.markdown("""
-                                        - 🖱️ Hover over words to see frequencies
-                                        - 🔍 Zoom in/out using mouse wheel
-                                        - 🖐️ Pan by clicking and dragging
-                                        - 📱 Pinch to zoom on touch devices
-                                        """)
-
-                                # Frequency Analysis Tab
-                                with view_tabs[2]:
-                                    # Word frequency table with visual enhancements
-                                    freq_df = pd.DataFrame(word_freq, columns=['Word', 'Frequency'])
-
-                                    col1, col2 = st.columns([2, 1])
-                                    with col1:
-                                        st.dataframe(
-                                            freq_df.style.background_gradient(
-                                                subset=['Frequency'],
-                                                cmap=colormap
-                                            ),
-                                            use_container_width=True
-                                        )
-                                    with col2:
-                                        st.metric(
-                                            "Most Frequent Word",
-                                            freq_df.iloc[0]['Word'],
-                                            f"Count: {freq_df.iloc[0]['Frequency']}"
-                                        )
-
-                        except Exception as e:
-                            st.error(f"Error generating wordcloud: {str(e)}")
-                            st.error(f"Detailed error: {traceback.format_exc()}")
-
-            elif viz_type == "Multi-group Comparison (2x2)":
-                if group_by:
-                    # Group selection
-                    all_groups = set()
-                    for df in responses_dict.values():
-                        if group_by in df.columns:
-                            all_groups.update(df[group_by].dropna().unique())
-
-                    selected_groups = st.multiselect(
-                        "🎯 Select groups to compare (max 4)",
-                        options=sorted(all_groups),
-                        max_selections=4
-                    )
-
-                    if selected_groups:
-                        # Process texts by group
-                        texts_by_group = {}
-                        for group in selected_groups:
-                            group_responses = []
-                            for df in responses_dict.values():
-                                if group_by in df.columns and variable in df.columns:
-                                    group_texts = df[df[group_by] == group][variable].dropna().tolist()
-                                    group_responses.extend(group_texts)
-                            texts_by_group[str(group)] = group_responses
-
-                        try:
-                            # Generate both versions
-                            static_fig, interactive_fig = generate_multi_group_wordcloud(
-                                texts_by_group,
-                                stopwords=st.session_state.custom_stopwords,
-                                synonyms=st.session_state.synonyms,
-                                colormap=colormap,
-                                highlight_words=highlight_words,
-                                main_title=wordcloud_title,
-                                subtitle=subtitle,
-                                source_text=source_text
-                            )
-
-                            # Create tabs for different views
-                            view_tabs = st.tabs([
-                                "📸 Static View",
-                                "🔄 Interactive View",
-                                "📊 Group Statistics"
-                            ])
-
-                            with view_tabs[0]:
-                                st.pyplot(static_fig)
-                                plt.close()
-
-                                # Download button
-                                col1, col2, col3 = st.columns([1, 2, 1])
-                                with col2:
-                                    buffer = BytesIO()
-                                    static_fig.savefig(buffer, format='png', dpi=300, bbox_inches='tight')
-                                    buffer.seek(0)
-
-                                    st.download_button(
-                                        label="💾 Download High-Quality Image",
-                                        data=buffer,
-                                        file_name=f"{variable}_multigroup_wordcloud.png",  # or appropriate filename
-                                        mime="image/png",
-                                        use_container_width=True
-                                    )
-
-                            with view_tabs[1]:
-                                st.plotly_chart(interactive_fig, use_container_width=True)
-
-                                with st.expander("ℹ️ Interactive Features", expanded=False):
-                                    st.markdown("""
-                                        - 🖱️ Hover over words to see frequencies
-                                        - 🔍 Use buttons to zoom in/out
-                                        - 🎯 Click words to highlight
-                                        - 📱 Drag to pan view
-                                        """)
-
-                            with view_tabs[2]:
-                                # Display group statistics
-                                for group, texts in texts_by_group.items():
-                                    with st.expander(f"📊 {group} Statistics", expanded=True):
-                                        col1, col2 = st.columns(2)
-                                        with col1:
-                                            st.metric("Total Responses", len(texts))
-                                        with col2:
-                                            st.metric("Unique Words",
-                                                      len(set(' '.join(texts).split())))
-
-                        except Exception as e:
-                            st.error(f"Error generating multi-group wordcloud: {str(e)}")
-
-                else:
-                    st.warning("⚠️ Please select a grouping variable to use multi-group comparison")
-
-            elif viz_type == "Side-by-side Comparison":
-                if group_by:
-                    # Group selection
-                    all_groups = set()
-                    for df in responses_dict.values():
-                        if group_by in df.columns:
-                            all_groups.update(df[group_by].dropna().unique())
-
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        group1 = st.selectbox("🔵 Select first group", options=sorted(all_groups), key="group1")
-                    with col2:
-                        group2 = st.selectbox("🔴 Select second group", options=sorted(all_groups), key="group2")
-
-                    if group1 and group2:
-                        # Process texts
-                        texts1, texts2 = [], []
-                        for df in responses_dict.values():
-                            if group_by in df.columns and variable in df.columns:
-                                texts1.extend(df[df[group_by] == group1][variable].dropna().tolist())
-                                texts2.extend(df[df[group_by] == group2][variable].dropna().tolist())
-
-                        try:
-                            static_fig, interactive_fig = generate_comparison_wordcloud(
-                                texts1, texts2,
-                                stopwords=st.session_state.custom_stopwords,
-                                synonyms=st.session_state.synonyms,
-                                colormap=colormap,
-                                highlight_words=highlight_words,
-                                main_title=wordcloud_title,
-                                subtitle=subtitle,
-                                source_text=source_text,
-                                label1=str(group1),
-                                label2=str(group2)
-                            )
-
-                            view_tabs = st.tabs([
-                                "📸 Static View",
-                                "🔄 Interactive View",
-                                "📊 Comparison Analysis"
-                            ])
-
-                            with view_tabs[0]:
-                                st.pyplot(static_fig)
-                                plt.close()
-
-                                col1, col2, col3 = st.columns([1, 2, 1])
-                                with col2:
-                                    buffer = BytesIO()
-                                    static_fig.savefig(buffer, format='png', dpi=300, bbox_inches='tight')
-                                    buffer.seek(0)
-
-                                    st.download_button(
-                                        label="💾 Download High-Quality Image",
-                                        data=buffer,
-                                        file_name=f"{variable}_multigroup_wordcloud.png",  # or appropriate filename
-                                        mime="image/png",
-                                        use_container_width=True
-                                    )
-
-                            with view_tabs[1]:
-                                st.plotly_chart(interactive_fig, use_container_width=True)
-
-                                with st.expander("ℹ️ Interactive Features", expanded=False):
-                                    st.markdown("""
-                                        - 🖱️ Hover for word frequencies
-                                        - 🔍 Zoom and pan capabilities
-                                        - 📊 Compare word usage between groups
-                                        """)
-
-                            with view_tabs[2]:
-                                # Comparison statistics
-                                col1, col2 = st.columns(2)
-                                with col1:
-                                    st.metric(f"{group1} Responses", len(texts1))
-                                    unique_words1 = len(set(' '.join(texts1).split()))
-                                    st.metric("Unique Words", unique_words1)
-                                with col2:
-                                    st.metric(f"{group2} Responses", len(texts2))
-                                    unique_words2 = len(set(' '.join(texts2).split()))
-                                    st.metric("Unique Words", unique_words2)
-
-                        except Exception as e:
-                            st.error(f"Error generating comparison wordcloud: {str(e)}")
-
-                else:
-                    st.warning("⚠️ Please select a grouping variable for side-by-side comparison")
-
-            else:  # Synonym Groups
-                if st.session_state.synonym_groups:
-                    st.subheader("🔤 Wordclouds by Synonym Groups")
-
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        selected_groups = st.multiselect(
-                            "Select synonym groups to visualize",
-                            options=sorted(st.session_state.synonym_groups.keys()),
-                            default=list(st.session_state.synonym_groups.keys())[:4]
-                        )
-
-                    with col2:
-                        separate_clouds = st.checkbox(
-                            "Generate separate wordclouds",
-                            value=True,
-                            help="Create individual wordclouds for each synonym group"
-                        )
-
-                    if selected_groups:
-                        selected_synonym_groups = {
-                            group: st.session_state.synonym_groups[group]
-                            for group in selected_groups
-                        }
-
-                        try:
-                            if separate_clouds:
-                                static_fig, interactive_fig = generate_synonym_group_wordclouds(
-                                    responses,
-                                    st.session_state.custom_stopwords,
-                                    selected_synonym_groups,
-                                    colormap=colormap
-                                )
-
-                                view_tabs = st.tabs([
-                                    "📸 Static View",
-                                    "🔄 Interactive View",
-                                    "📊 Synonym Analysis"
-                                ])
-
-                                with view_tabs[0]:
-                                    st.pyplot(static_fig)
-                                    plt.close()
-
-                                    col1, col2, col3 = st.columns([1, 2, 1])
-                                    with col2:
-                                        buffer = BytesIO()
-                                        static_fig.savefig(buffer, format='png', dpi=300, bbox_inches='tight')
-                                        buffer.seek(0)
-
-                                        st.download_button(
-                                            label="💾 Download High-Quality Image",
-                                            data=buffer,
-                                            file_name=f"{variable}_synonym_groups.png",
-                                            mime="image/png",
-                                            use_container_width=True
-                                        )
-
-                                with view_tabs[1]:
-                                    st.plotly_chart(interactive_fig, use_container_width=True)
-
-                                with view_tabs[2]:
-                                    # Display synonym group statistics
-                                    for group, synonyms in selected_synonym_groups.items():
-                                        with st.expander(f"📊 {group} Statistics", expanded=True):
-                                            st.write("Synonyms:", ", ".join(synonyms))
-                                            # Count occurrences
-                                            count = sum(1 for text in responses
-                                                        for syn in synonyms
-                                                        if isinstance(text, str) and syn.lower() in text.lower())
-                                            st.metric("Total Occurrences", count)
-
-                            else:
-                                # Combined wordcloud for all synonym groups
-                                static_wc, interactive_wc, _ = generate_wordcloud(
-                                    responses,
-                                    st.session_state.custom_stopwords,
-                                    selected_synonym_groups,
-                                    colormap=colormap,
-                                    highlight_words=highlight_words
-                                )
-
-                                view_tabs = st.tabs([
-                                    "🔄 Interactive View",
-                                    "📸 Static View"
-                                ])
-
-                                with view_tabs[0]:
-                                    st.plotly_chart(interactive_wc, use_container_width=True)
-
-                                with view_tabs[1]:
-                                    fig, ax = plt.subplots(figsize=(12, 6))
-                                    ax.imshow(static_wc)
-                                    ax.axis('off')
-                                    st.pyplot(fig)
-                                    plt.close()
-
-                                    col1, col2, col3 = st.columns([1, 2, 1])
-                                    with col2:
-                                        buffer = BytesIO()
-                                        static_wc.to_image().save(buffer, format='PNG', optimize=True)
-                                        buffer.seek(0)
-
-                                        st.download_button(
-                                            label="💾 Download High-Quality Image",
-                                            data=buffer,
-                                            file_name=f"{variable}_combined_synonyms.png",
-                                            mime="image/png",
-                                            use_container_width=True
-                                        )
-
-                        except Exception as e:
-                            st.error(f"Error generating synonym group wordclouds: {str(e)}")
-                            st.error(f"Detailed error: {traceback.format_exc()}")
-                else:
-                    st.warning(
-                        "⚠️ No synonym groups defined. Add synonym groups in the sidebar to use this visualization.")
-
-        # Word Analysis Tab
-        with tabs[2]:
-            with st.expander("📊 About Word Analysis", expanded=False):
-                st.markdown("""
-                This analysis provides detailed insights into word usage patterns through:
-                - **Frequency charts** showing most common terms
-                - **Co-occurrence networks** revealing word relationships
-                - **Statistical analysis** of word patterns
-
-                **Available Visualizations:**
-                1. 📈 Word frequency distribution
-                2. 🕸️ Word co-occurrence network
-                3. 📋 Detailed frequency tables
-                """)
-
-            # Word frequency and co-occurrence analysis by survey
-            for survey_id, responses in responses_by_survey.items():
-                st.write(f"### Analysis for {survey_id}")
-
-                processed_texts = [
-                    process_text(text, st.session_state.custom_stopwords, st.session_state.synonyms)
-                    for text in responses
-                    if text.strip()
-                ]
-
-                if processed_texts:
-                    try:
-                        # Frequency Analysis Section
-                        st.subheader("📈 Word Frequencies")
-                        vectorizer = CountVectorizer(
-                            max_features=20,
-                            stop_words=list(st.session_state.custom_stopwords)
-                        )
-
-                        X = vectorizer.fit_transform(processed_texts)
-                        words = vectorizer.get_feature_names_out()
-                        frequencies = X.sum(axis=0).A1
-
-                        freq_df = pd.DataFrame({
-                            'word': words,
-                            'frequency': frequencies
-                        }).sort_values('frequency', ascending=False)
-
-                        fig = px.bar(
-                            freq_df,
-                            x='word',
-                            y='frequency',
-                            title='Word Frequency Distribution',
-                            labels={'word': 'Word', 'frequency': 'Frequency'},
-                            color='frequency',
-                            color_continuous_scale='Viridis'
-                        )
-                        fig.update_traces(texttemplate='%{y}', textposition='outside')
-                        safe_plotly_chart(fig, st, "Unable to display word frequency chart")
-
-                        # Network Analysis Section
-                        st.markdown("---")
-                        st.subheader("🕸️ Word Co-occurrence Network")
-
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            # Slider for Minimum Co-occurrence Threshold with unique key
-                            min_edge_weight = st.slider(
-                                "Minimum co-occurrence threshold",
-                                min_value=1,
-                                max_value=10,
-                                value=2,
-                                help="Minimum number of times words must appear together",
-                                key=f"min_edge_weight_{survey_id}"
-                            )
-
-                            # Slider for Maximum Number of Words with unique key
-                            max_words = st.slider(
-                                "Maximum number of words",
-                                min_value=10,
-                                max_value=100,
-                                value=30,
-                                help="Maximum number of words to include in the network",
-                                key=f"max_words_{survey_id}"
-                            )
-
-                        network_fig = create_word_cooccurrence_network(
-                            processed_texts,
-                            min_edge_weight=min_edge_weight,
-                            max_words=max_words,
-                            stopwords=st.session_state.custom_stopwords
-                        )
-                        safe_plotly_chart(network_fig, st, "Unable to display word co-occurrence network")
-
-                        # Co-occurrence table
-                        st.markdown("---")
-                        st.subheader("📋 Top Co-occurring Word Pairs")
-                        cooc_df = get_top_cooccurrences(
-                            processed_texts,
-                            n_words=max_words,
-                            n_pairs=15,
-                            stopwords=st.session_state.custom_stopwords
-                        )
-                        st.dataframe(
-                            cooc_df,
-                            use_container_width=True,
-                            column_config={
-                                "word1": "Word 1",
-                                "word2": "Word 2",
-                                "cooccurrences": st.column_config.NumberColumn(
-                                    "Co-occurrences",
-                                    help="Number of times these words appear together"
-                                )
-                            }
-                        )
-
-                    except Exception as e:
-                        st.error(f"Error in analysis for {survey_id}: {e}")
-                else:
-                    st.warning(f"No valid texts found for analysis in {survey_id}")
-
-        # Topic Discovery Tab
-        with tabs[3]:
-            with st.expander("🔍 About Topic Discovery", expanded=False):
-                st.markdown("""
-                Topic modeling uses advanced machine learning to uncover hidden themes in your text:
-
-                **What it does:**
-                - 🎯 Identifies main topics automatically
-                - 🔄 Groups similar responses together
-                - 📍 Maps relationships between topics
-                - 📊 Quantifies topic importance
-
-                **Key Features:**
-                1. Interactive Topic Distribution
-                2. Top Terms Analysis
-                3. Sample Response Review
-                4. Topic Size Visualization
-                """)
-
-            # Topic modeling by survey
-            for survey_id, responses in responses_by_survey.items():
-                st.write(f"### Topics for {survey_id}")
-
-                processed_texts = [
-                    process_text(text, st.session_state.custom_stopwords, st.session_state.synonyms)
-                    for text in responses if isinstance(text, str) and text.strip()
-                ]
-
-                # Only proceed if we have enough valid responses
-                if len(processed_texts) >= 20:  # Minimum threshold
-                    try:
-                        # Topic modeling settings adjusted for smaller datasets
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            num_topics = st.slider(
-                                "Number of Topics",
-                                min_value=2,
-                                max_value=min(8, len(processed_texts) // 25),  # Conservative max topics
-                                value=min(4, len(processed_texts) // 25),  # Conservative default
-                                key=f"num_topics_{survey_id}"
-                            )
-                        with col2:
-                            min_topic_size = st.slider(
-                                "Minimum Topic Size",
-                                min_value=2,
-                                max_value=5,
-                                value=2,
-                                key=f"min_topic_size_{survey_id}"
-                            )
-
-                        # Create a simplified topic model configuration
-                        @st.cache_resource
-                        def get_sentence_transformer():
-                            return SentenceTransformer('all-MiniLM-L6-v2')  # Lightweight model
-
-
-                        # Get embeddings
-                        with st.spinner("Computing text embeddings..."):
-                            model = get_sentence_transformer()
-                            embeddings = model.encode(processed_texts, show_progress_bar=False)
-
-                        # Perform clustering
-                        with st.spinner("Identifying topics..."):
-                            kmeans = KMeans(
-                                n_clusters=num_topics,
-                                random_state=42
-                            ).fit(embeddings)
-
-                        # Organize texts by cluster
-                        texts_by_cluster = defaultdict(list)
-                        for text, label in zip(processed_texts, kmeans.labels_):
-                            texts_by_cluster[label].append(text)
-
-                        # Get top terms for each cluster using CountVectorizer
-                        vectorizer = CountVectorizer(
-                            max_features=10,
-                            stop_words=list(st.session_state.custom_stopwords)
-                        )
-
-                        topic_info = []
-                        topics = kmeans.labels_
-
-                        for topic_id in range(num_topics):
-                            cluster_texts = texts_by_cluster[topic_id]
-                            if cluster_texts:
-                                # Get top terms
-                                try:
-                                    X = vectorizer.fit_transform(cluster_texts)
-                                    words = vectorizer.get_feature_names_out()
-                                    freqs = X.sum(axis=0).A1
-                                    top_words = [(word, freq) for word, freq in zip(words, freqs)]
-                                    top_words.sort(key=lambda x: x[1], reverse=True)
-                                except:
-                                    top_words = [("", 0)]  # Fallback if vectorization fails
-
-                                # Add topic info
-                                topic_info.append({
-                                    'Topic': topic_id,
-                                    'Count': len(cluster_texts),
-                                    'Name': f"Topic {topic_id}",
-                                    'Top_Terms': top_words[:5]
-                                })
-
-                        topic_info = pd.DataFrame(topic_info)
-
-                        # Create visualization tabs
-                        topic_tabs = st.tabs(["Overview", "Details", "Samples"])
-
-                        with topic_tabs[0]:
-                            # Create treemap visualization
-                            topic_viz_data = {
-                                'Topic': [],
-                                'Size': [],
-                                'Terms': []
-                            }
-
-                            for _, row in topic_info.iterrows():
-                                topic_viz_data['Topic'].append(f"Topic {row['Topic']}")
-                                topic_viz_data['Size'].append(row['Count'])
-                                topic_viz_data['Terms'].append(
-                                    ", ".join([term for term, _ in row['Top_Terms'][:3]]))
-
-                            fig = px.treemap(
-                                topic_viz_data,
-                                path=['Topic'],
-                                values='Size',
-                                hover_data=['Terms'],
-                                title='Topic Distribution'
-                            )
-                            safe_plotly_chart(fig, st, "Unable to display topic distribution")
-
-                            # Add topic size distribution
-                            sizes_fig = px.bar(
-                                topic_info,
-                                x='Topic',
-                                y='Count',
-                                title='Topic Sizes',
-                                labels={'Count': 'Number of Responses', 'Topic': 'Topic ID'}
-                            )
-                            safe_plotly_chart(sizes_fig, st, "Unable to display topic sizes")
-
-                        with topic_tabs[1]:
-                            # Display detailed topic information
-                            for idx, row in topic_info.iterrows():
-                                with st.expander(f"Topic {row['Topic']} ({row['Count']} responses)"):
-                                    # Display top terms
-                                    st.write("Top terms:")
-                                    terms_df = pd.DataFrame(row['Top_Terms'], columns=['Term', 'Frequency'])
-
-                                    # Create bar chart for term frequencies
-                                    term_fig = px.bar(
-                                        terms_df,
-                                        x='Frequency',
-                                        y='Term',
-                                        orientation='h',
-                                        title=f'Term Frequencies for Topic {row["Topic"]}'
-                                    )
-                                    safe_plotly_chart(term_fig, st, "Unable to display term frequencies")
-
-                        with topic_tabs[2]:
-                            # Display sample responses for each topic
-                            selected_topic = st.selectbox(
-                                "Select Topic to View Samples",
-                                options=topic_info['Topic'].tolist(),
-                                format_func=lambda x: f"Topic {x} ({len(texts_by_cluster[x])} responses)"
-                            )
-
-                            num_samples = st.slider(
-                                "Number of samples to display",
-                                min_value=1,
-                                max_value=min(10, len(texts_by_cluster[selected_topic])),
-                                value=3
-                            )
-
-                            st.write(f"### Sample Responses for Topic {selected_topic}")
-                            sample_texts = texts_by_cluster[selected_topic][:num_samples]
-                            for i, text in enumerate(sample_texts, 1):
-                                with st.expander(f"Response {i}", expanded=True):
-                                    st.write(text)
-
-                    except Exception as e:
-                        st.error(f"Error in topic modeling for {survey_id}: {str(e)}")
-                        st.info("""
-                            Troubleshooting tips:
-                            - Try reducing the number of topics
-                            - Make sure you have enough valid responses
-                            - Check for very short or empty responses
-                        """)
-                else:
-                    st.warning(
-                        f"Not enough valid responses in {survey_id} for topic modeling (minimum 20 required)")
-
-        # Sentiment Analysis Tab
-        with tabs[4]:
-            with st.expander("❤️ About Sentiment Analysis", expanded=False):
-                st.markdown("""
-                Analyze the emotional tone and attitude in responses:
-
-                **Key Metrics:**
-                - 😊 Positive sentiment score
-                - 😐 Neutral sentiment detection
-                - 😔 Negative sentiment identification
-                - 📊 Overall sentiment distribution
-
-                **Visualizations:**
-                1. Sentiment Flow Analysis
-                2. Comparative Radar Chart
-                3. Sentiment Distribution Sunburst
-                """)
-
-            st.markdown("### Sentiment Analysis Results")
-
-            if not group_by:
-                st.warning("Please select a grouping variable to compare sentiments across groups")
-            else:
-                # Get texts by group
-                texts_by_group = {}
-                for df in responses_dict.values():
-                    if group_by in df.columns and variable in df.columns:
-                        groups = df[group_by].dropna().unique()
-                        for group in groups:
-                            group_texts = df[df[group_by] == group][variable].dropna().tolist()
-                            if str(group) not in texts_by_group:
-                                texts_by_group[str(group)] = []
-                            texts_by_group[str(group)].extend(group_texts)
-
-                # Analyze sentiment
-                sentiment_stats = analyze_group_sentiment(texts_by_group)
-
-                # Create tabs for different visualizations
-                viz_tabs = st.tabs(["📊 Distribution", "📡 Radar", "🌟 Sunburst"])
-
-                with viz_tabs[0]:
-                    safe_plotly_chart(
-                        create_sentiment_distribution(sentiment_stats),
-                        st,
-                        "Unable to display sentiment distribution"
-                    )
-
-                    st.markdown("""
-                                **Understanding the Distribution:**
-                                - Shows full range of sentiment scores
-                                - Box shows 25th-75th percentile
-                                - Line shows median
-                                - Points show outliers
-                                - Compare distributions across groups
-                                """)
-
-                # Add detailed statistics
-                st.markdown("### 📊 Detailed Sentiment Statistics")
-
-                # Create a DataFrame for the statistics
-                stats_data = []
-                for group, stats in sentiment_stats.items():
-                    stats_data.append({
-                        'Group': group,
-                        'Total Responses': stats['total'],
-                        'Positive %': f"{stats['pos_pct']:.1f}%",
-                        'Neutral %': f"{stats['neu_pct']:.1f}%",
-                        'Negative %': f"{stats['neg_pct']:.1f}%",
-                        'Average Sentiment': f"{stats['avg_compound']:.3f}"
-                    })
-
-                stats_df = pd.DataFrame(stats_data)
-
-                # Only apply styling if the dataframe has data and the required column exists
-                if not stats_df.empty and 'Average Sentiment' in stats_df.columns:
-                    styled_df = stats_df.style.background_gradient(
-                        subset=['Average Sentiment'],
-                        cmap='RdYlGn',
-                        vmin=-1,
-                        vmax=1
-                    )
-                    st.dataframe(styled_df, use_container_width=True)
-                else:
-                    # Fallback to displaying the plain dataframe
-                    st.dataframe(stats_df, use_container_width=True)
-
-                with viz_tabs[1]:
-                    safe_plotly_chart(
-                        create_sentiment_radar(sentiment_stats),
-                        st,
-                        "Unable to display sentiment radar chart"
-                    )
-
-                    st.markdown("""
-                                **Understanding the Radar Chart:**
-                                - Each axis represents a sentiment metric
-                                - Larger area = more positive overall
-                                - Compare patterns between groups
-                                - Hover for exact values
-                                """)
-
-                with viz_tabs[2]:
-                    sunburst_fig = create_sentiment_sunburst(sentiment_stats)
-                    safe_plotly_chart(sunburst_fig, st, "Unable to display sentiment sunburst chart")
-                    if sunburst_fig is not None:
-                        try:
-                            st.plotly_chart(sunburst_fig, use_container_width=True)
-
-                            st.markdown("""
-                                **Understanding the Sunburst Chart:**
-                                - Inner circle shows total responses per group
-                                - Outer ring shows sentiment distribution
-                                - 🟢 Green = Positive
-                                - 🟡 Yellow = Neutral
-                                - 🔴 Red = Negative
-                                - Hover for detailed percentages
-                                """)
-                        except Exception as e:
-                            st.warning("Unable to display sentiment visualization due to insufficient data")
-                    else:
-                        st.warning("Not enough data to generate sentiment visualization")
-
-        # Theme Evolution Tab
-        with tabs[5]:
-            with st.expander("🌊 About Theme Evolution", expanded=False):
-                st.markdown("""
-                Track how themes and topics evolve across groups or time periods:
-
-                **Features:**
-                - 🔄 Theme flow visualization
-                - 🌡️ Theme intensity tracking
-                - 📈 Evolution patterns
-                - 🔍 Detailed theme analysis
-
-                **Available Views:**
-                1. Sankey Flow Diagram
-                2. Theme Intensity Heatmap
-                3. Comparative Analysis
-                """)
-
-            if not group_by:
-                st.warning("Please select a grouping variable to analyze theme evolution")
-            else:
-                # Get texts by group
-                texts_by_group = {}
-                for df in responses_dict.values():
-                    if group_by in df.columns and variable in df.columns:
-                        groups = df[group_by].dropna().unique()
-                        for group in groups:
-                            group_texts = df[df[group_by] == group][variable].dropna().tolist()
-                            if str(group) not in texts_by_group:
-                                texts_by_group[str(group)] = []
-                            texts_by_group[str(group)].extend(group_texts)
-
-                # Analysis settings
-                col1, col2 = st.columns(2)
-                with col1:
-                    num_themes = st.slider(
-                        "Number of themes to track",
-                        min_value=3,
-                        max_value=10,
-                        value=5,
-                        help="Maximum number of themes to track"
-                    )
-                with col2:
-                    min_freq = st.slider(
-                        "Minimum theme frequency",
-                        min_value=2,
-                        max_value=10,
-                        value=3,
-                        help="Minimum occurrences required for a theme"
-                    )
-
-                try:
-                    # Calculate theme evolution
-                    with st.spinner("Analyzing theme evolution..."):
-                        evolution_data = calculate_theme_evolution(
-                            texts_by_group,
-                            num_themes=num_themes,
-                            min_freq=min_freq
-                        )
-
-                    if evolution_data and evolution_data['themes']:
-                        # Create visualizations in tabs
-                        viz_tabs = st.tabs(["🔄 Flow Diagram", "🌡️ Heat Map"])
-
-                        with viz_tabs[0]:
-                            flow_fig = create_theme_flow_diagram(evolution_data)
-                            if flow_fig:
-                                st.plotly_chart(flow_fig, use_container_width=True)
-
-                                st.markdown("""
-                                            **Understanding the Flow Diagram:**
-                                            - Columns represent groups/time periods
-                                            - Flows show theme continuation
-                                            - Width indicates theme strength
-                                            - Colors distinguish themes
-                                            - Hover for details
-                                            """)
-                            else:
-                                st.warning("Not enough data to create flow diagram")
-
-                        with viz_tabs[1]:
-                            heat_fig = create_theme_heatmap(evolution_data)
-                            if heat_fig:
-                                st.plotly_chart(heat_fig, use_container_width=True)
-
-                                st.markdown("""
-                                            **Understanding the Heat Map:**
-                                            - Rows show themes
-                                            - Columns show groups
-                                            - Color intensity = theme strength
-                                            - Track theme prevalence
-                                            - Compare across groups
-                                            """)
-                            else:
-                                st.warning("Not enough data to create heatmap")
-
-                        # Display theme details
-                        st.markdown("### Theme Details")
-                        theme_df = pd.DataFrame({
-                            'Theme': evolution_data['themes'],
-                            'Average Frequency': [np.mean(values) for values in
-                                                  evolution_data['values']],
-                            'Max Frequency': [np.max(values) for values in evolution_data['values']],
-                            'Groups Present': [sum(1 for v in values if v > 0) for values in
-                                               evolution_data['values']]
-                        })
-                        theme_df = theme_df.sort_values('Average Frequency', ascending=False)
-                        st.dataframe(
-                            theme_df,
-                            use_container_width=True,
-                            hide_index=True
-                        )
-                    else:
-                        st.warning(
-                            "No significant themes found across groups. Try adjusting the minimum frequency or number of themes.")
-                except Exception as e:
-                    st.error(f"Error analyzing themes: {str(e)}")
-                    st.info("Try adjusting the analysis settings or check your data format.")
-
-        # Sample Responses
-        st.markdown("---")
-        st.markdown("## Response Examples")
-
-        # 1) Organize responses+metadata by group
-        #    Instead of just storing text, store full info in a dict
-        texts_by_group = {"All": []}
-
-        # Go through each DataFrame, collecting rows that have the open-ended var
-        for df in responses_dict.values():
-            if variable in df.columns:
-                # Build a list of dictionaries:
-                # { "text": the open-ended response,
-                #   "id": maybe df["id"],
-                #   "jobtitle": maybe df["jobtitle"],
-                #   "age": maybe df["age"],
-                #   "province": maybe df["province"] or df["state"] if present, etc. }
-                for idx, row in df.iterrows():
-                    raw_text = row[variable]
-                    if pd.notna(raw_text) and str(raw_text).strip() and str(raw_text).lower() not in {'nan', 'none',
-                                                                                                      'n/a', 'na'}:
-                        sample_dict = {
-                            "text": str(raw_text).strip(),
-                            "id": row["id"] if "id" in df.columns else None,
-                            "jobtitle": row["jobtitle"] if "jobtitle" in df.columns else None,
-                            "age": row["age"] if "age" in df.columns else None
-                        }
-                        # If you have "province" or "state" columns, try to store one of them
-                        if "province" in df.columns and pd.notna(row["province"]):
-                            sample_dict["province"] = row["province"]
-                        elif "state" in df.columns and pd.notna(row["state"]):
-                            sample_dict["province"] = row["state"]  # use "province" key for convenience
-                        else:
-                            sample_dict["province"] = None
-
-                        # Put it in the "All" bucket
-                        texts_by_group["All"].append(sample_dict)
-
-        # Then handle grouping if requested
-        if group_by:
-            for df in responses_dict.values():
-                if group_by in df.columns and variable in df.columns:
-                    unique_groups = df[group_by].unique()
-                    for group_val in unique_groups:
-                        if pd.isna(group_val):
-                            group_key = 'No Group'
-                        else:
-                            group_key = str(group_val)
-                        # Filter matching rows
-                        subset_df = df[df[group_by] == group_val].dropna(subset=[variable])
-                        for idx, row in subset_df.iterrows():
-                            raw_text = row[variable]
-                            if pd.notna(raw_text) and str(raw_text).strip() and str(raw_text).lower() not in {'nan',
-                                                                                                              'none',
-                                                                                                              'n/a',
-                                                                                                              'na'}:
-                                sample_dict = {
-                                    "text": str(raw_text).strip(),
-                                    "id": row["id"] if "id" in df.columns else None,
-                                    "jobtitle": row["jobtitle"] if "jobtitle" in df.columns else None,
-                                    "age": row["age"] if "age" in df.columns else None
-                                }
-                                # Province or state
-                                if "province" in df.columns and pd.notna(row["province"]):
-                                    sample_dict["province"] = row["province"]
-                                elif "state" in df.columns and pd.notna(row["state"]):
-                                    sample_dict["province"] = row["state"]
-                                else:
-                                    sample_dict["province"] = None
-
-                                # Add to group
-                                if group_key not in texts_by_group:
-                                    texts_by_group[group_key] = []
-                                texts_by_group[group_key].append(sample_dict)
-
-        # Remove duplicates while preserving order (based on "text")
-        #   If you'd prefer a row-level dedup, you'd compare {text, id, etc.}
-        for group_name, dict_list in texts_by_group.items():
-            seen_texts = set()
-            unique_list = []
-            for d in dict_list:
-                if d["text"] not in seen_texts:
-                    seen_texts.add(d["text"])
-                    unique_list.append(d)
-            texts_by_group[group_name] = unique_list
-
-        # If there's a search word, display matching responses
-        if search_word:
-            display_word_search_results(
-                {
-                    group: [d["text"] for d in dicts]
-                    for group, dicts in texts_by_group.items()
-                },
-                search_word
+        selected_index = 0
+        if st.session_state.selected_analysis in analyses:
+            selected_index = analyses.index(st.session_state.selected_analysis)
+
+        st.session_state.selected_analysis = st.selectbox(
+            "Analysis Section",
+            options=analyses,
+            index=selected_index
+        )
+
+        # Choose variable
+        if var_opts:
+            st.subheader("Variable to analyze")
+            chosen_var = st.selectbox(
+                "Select an open-ended variable",
+                list(var_opts.keys()),
+                format_func=lambda x: var_opts[x]
             )
         else:
-            # Display random samples if no search word
-            if st.button("🔄 Generate New Random Samples"):
-                st.session_state.sample_seed = int(time.time())
+            chosen_var = None
 
-            st.markdown("### Assign to Groups Directly from Samples")
+        # Group by
+        if grp_cols:
+            st.subheader("Group By (optional)")
+            chosen_grp = st.selectbox("Group responses by", [None, "None"] + grp_cols, index=1)
+            if chosen_grp in [None, "None"]:
+                chosen_grp = None
+        else:
+            chosen_grp = None
 
-            group_tabs = st.tabs(list(texts_by_group.keys()))
+        st.markdown("---")
 
-            for tab, group_name in zip(group_tabs, texts_by_group.keys()):
-                with tab:
-                    dict_list = texts_by_group[group_name]
-                    if dict_list:
-                        # Filter valid (redundant check, but just in case)
-                        valid_list = [d for d in dict_list if d["text"]]
-                        if valid_list:
-                            n = min(5, len(valid_list))  # default 5 samples
-                            if st.session_state.get('sample_seed') is not None:
-                                np.random.seed(st.session_state.sample_seed)
-                            sample_dicts = np.random.choice(valid_list, size=n, replace=False)
+        # Stopwords manager
+        render_stopwords_management()
 
-                            st.write(f"Showing {n} of {len(valid_list)} responses for {group_name}")
+        # Synonym manager
+        render_synonym_groups_management()
 
-                            for i, sample_obj in enumerate(sample_dicts, 1):
-                                with st.expander(f"Response {i}", expanded=True):
-                                    # Build italic line:
-                                    # ID, Age, JobTitle, Province
-                                    # e.g.: *ID: 1234 | Age: 29 | Job Title: Engineer | Province: Ontario*
-                                    # Omit province if None
-                                    id_str = f"ID: {sample_obj['id']}" if sample_obj['id'] else ""
-                                    age_str = f"Age: {sample_obj['age']}" if sample_obj['age'] else ""
-                                    job_str = f"Job Title: {sample_obj['jobtitle']}" if sample_obj['jobtitle'] else ""
-                                    prov_str = f"Province/State: {sample_obj['province']}" if sample_obj[
-                                        'province'] else ""
+        # Refresh button
+        if st.button("🔄 Refresh All"):
+            st.session_state.file_processed = False
+            st.rerun()
+    else:
+        chosen_var = None
+        chosen_grp = None
 
-                                    # Combine only non-empty pieces
-                                    meta_parts = [x for x in [id_str, age_str, job_str, prov_str] if x]
-                                    if meta_parts:
-                                        italic_line = " | ".join(meta_parts)
-                                        st.markdown(f"*{italic_line}*")
+# ----------------------------------------------------------------
+# MAIN CONTENT
+# ----------------------------------------------------------------
+if st.session_state.file_processed and chosen_var:
+    qmap = st.session_state.data['qmap']
+    rdict = st.session_state.data['responses_dict']
+    open_var_options = st.session_state.data['open_var_options']
+    grouping_columns = st.session_state.data['grouping_columns']
 
-                                    # Show the actual text
-                                    st.write(sample_obj["text"])
+    # Gather responses for chosen variable
+    var_resps = get_responses_for_variable(rdict, chosen_var, chosen_grp)
+    if not var_resps:
+        st.warning("No responses found for this variable. Please verify your selection.")
+        st.stop()
 
-                                    # "Assign to group" selectbox
-                                    if 'open_coding_groups' not in st.session_state:
-                                        st.session_state.open_coding_groups = []
-                                    current_assigned = st.session_state.open_coding_assignments.get(sample_obj["text"],
-                                                                                                    "Unassigned")
+    # Determine which section of the dashboard to show
+    if st.session_state.selected_analysis == "Open Coding":
+        st.markdown("## Open Coding")
+        render_open_coding_interface(chosen_var, rdict, open_var_options, grouping_columns)
 
-                                    assigned_group = st.selectbox(
-                                        "Assign this response to a group:",
-                                        options=["Unassigned"] + [g["name"] for g in
-                                                                  st.session_state.open_coding_groups],
-                                        index=(["Unassigned"] + [g["name"] for g in
-                                                                 st.session_state.open_coding_groups]).index(
-                                            current_assigned)
-                                        if current_assigned in (["Unassigned"] + [g["name"] for g in
-                                                                                  st.session_state.open_coding_groups])
-                                        else 0,
-                                        key=f"sample_assign_{group_name}_{i}"
-                                    )
+    elif st.session_state.selected_analysis == "Word Cloud":
+        st.markdown("## 🎨 Word Cloud")
+        st.write(f"**Variable:** {open_var_options.get(chosen_var, chosen_var)}")
 
-                                    st.session_state.open_coding_assignments[sample_obj["text"]] = assigned_group
+        # Sub-tabs for Word Cloud
+        wc_tabs = st.tabs([
+            "🖼 Single Wordcloud",
+            "🔢 Multi-Group (2x2)",
+            "⚖ Side-by-Side",
+            "🔗 Synonym Groups"
+        ])
 
+        # 1) Single Wordcloud
+        with wc_tabs[0]:
+            st.markdown("### Single Wordcloud per Survey/Group")
+            # No nested expanders - options are at the top level
+            col1, col2 = st.columns(2)
+            with col1:
+                wc_cmap = st.selectbox("Color Map", ['viridis', 'plasma', 'inferno', 'magma', 'cividis'])
+            with col2:
+                wc_highlight = st.text_area("Highlight words (one per line)", "")
+                highlight_set = {w.strip().lower() for w in wc_highlight.split('\n') if w.strip()}
+
+            # Generate for each group
+            for sid, arr in var_resps.items():
+                st.subheader(f"{sid} - {len(arr)} responses")
+                if not arr:
+                    st.warning("No valid responses here.")
+                    continue
+
+                wc_static, wc_interactive, freq_data = generate_wordcloud(
+                    arr,
+                    stopwords=st.session_state.custom_stopwords,
+                    synonyms=st.session_state.synonym_groups,
+                    colormap=wc_cmap,
+                    highlight_words=highlight_set,
+                    return_freq=True
+                )
+                if wc_static and wc_interactive:
+                    wc_sub = st.tabs(["📸 Static", "🔄 Interactive", "📊 Frequencies"])
+                    with wc_sub[0]:
+                        fig_, ax_ = plt.subplots(figsize=(12, 6))
+                        ax_.imshow(wc_static, interpolation='bilinear')
+                        ax_.axis('off')
+                        st.pyplot(fig_)
+                        plt.close(fig_)
+                        add_download_buttons_wc(wc_static, freq_data, prefix="wc_single", suffix=sid)
+                    with wc_sub[1]:
+                        st.plotly_chart(wc_interactive, use_container_width=True)
+                    with wc_sub[2]:
+                        freq_df_ = pd.DataFrame(freq_data, columns=['Word', 'Frequency'])
+                        st.dataframe(freq_df_, use_container_width=True)
+                else:
+                    st.warning("Unable to generate wordcloud. Possibly no valid text after cleaning.")
+
+        # 2) Multi-Group (2x2)
+        with wc_tabs[1]:
+            st.markdown("### Multi-Group Comparison (Up to 4 Groups)")
+            if chosen_grp:
+                # Attempt to parse group values
+                grpvals = set()
+                for k_ in var_resps.keys():
+                    parts = k_.split('_', maxsplit=1)
+                    if len(parts) == 2:
+                        grpvals.add(parts[1])
+
+                selected_groups = st.multiselect("Select up to 4 group values", sorted(grpvals), max_selections=4)
+                if selected_groups:
+                    # Build dict
+                    group_dict = {}
+                    for gv in selected_groups:
+                        all_txts = []
+                        for kk, arr_ in var_resps.items():
+                            if kk.endswith(f"_{gv}"):
+                                all_txts.extend(arr_)
+                        if all_txts:
+                            group_dict[gv] = all_txts
+
+                    # If we have data
+                    if group_dict:
+                        colA, colB = st.columns(2)
+                        with colA:
+                            mg_cmap = st.selectbox("Color Map", ['viridis', 'plasma', 'inferno', 'magma', 'cividis'])
+                        with colB:
+                            mg_highlight = st.text_area("Highlight words (one per line)", "")
+                            mg_highlight_set = {h.strip().lower() for h in mg_highlight.split('\n') if h.strip()}
+
+                        fig_s, fig_i, freq_dict = generate_multi_group_wordcloud(
+                            group_dict,
+                            stopwords=st.session_state.custom_stopwords,
+                            synonyms=st.session_state.synonym_groups,
+                            colormap=mg_cmap,
+                            highlight_words=mg_highlight_set,
+                            main_title="Multi-Group Wordcloud",
+                            subtitle=f"{chosen_grp}",
+                            return_freq=True
+                        )
+                        if fig_s and fig_i:
+                            mg_sub = st.tabs(["📸 Static", "🔄 Interactive", "📊 Frequencies"])
+                            with mg_sub[0]:
+                                st.pyplot(fig_s)
+                                plt.close(fig_s)
+                                add_download_buttons_wc(fig_s, None, prefix="multi_group")
+                            with mg_sub[1]:
+                                st.plotly_chart(fig_i, use_container_width=True)
+                            with mg_sub[2]:
+                                if freq_dict:
+                                    for gname, freq_data_ in freq_dict.items():
+                                        st.markdown(f"**{gname}**")
+                                        df_ = pd.DataFrame(freq_data_, columns=['Word', 'Frequency'])
+                                        st.dataframe(df_, use_container_width=True)
                         else:
-                            st.warning(f"No valid responses available for group: {group_name}")
+                            st.warning("No data for multi-group wordcloud.")
                     else:
-                        st.warning(f"No responses found for {group_name}")
+                        st.warning("No matching texts for the selected group values.")
+                else:
+                    st.info("Select up to 4 group values to compare.")
+            else:
+                st.warning("Pick a 'Group By' variable to use multi-group comparison.")
+
+        # 3) Side-by-Side
+        with wc_tabs[2]:
+            st.markdown("### Side-by-Side Wordcloud")
+            if chosen_grp:
+                grpvals = set()
+                for k_ in var_resps.keys():
+                    parts = k_.split('_', maxsplit=1)
+                    if len(parts) == 2:
+                        grpvals.add(parts[1])
+
+                colA, colB = st.columns(2)
+                with colA:
+                    left_cats = st.multiselect("Left side categories", sorted(grpvals), [])
+                with colB:
+                    right_cats = st.multiselect("Right side categories", sorted(grpvals), [])
+
+                if left_cats and right_cats:
+                    # Build dictionary
+                    side_dict = {}
+                    for cat_ in (left_cats + right_cats):
+                        valid_txts = []
+                        for kk, arr_ in var_resps.items():
+                            if kk.endswith(f"_{cat_}"):
+                                valid_txts.extend(arr_)
+                        if valid_txts:
+                            side_dict[cat_] = valid_txts
+
+                    # Options (no nested expanders)
+                    sb_cmap = st.selectbox("Color Map", ['viridis', 'plasma', 'inferno', 'magma', 'cividis'],
+                                           key="sidebyside_cmap")
+                    sb_high = st.text_area("Highlight words (one per line)", key="sidebyside_hw")
+                    sb_highset = {h.strip().lower() for h in sb_high.split('\n') if h.strip()}
+
+                    fig_side_s, fig_side_i, freq_side = generate_combined_comparison_wordcloud(
+                        side_dict,
+                        left_cats,
+                        right_cats,
+                        stopwords=st.session_state.custom_stopwords,
+                        synonyms=st.session_state.synonym_groups,
+                        colormap=sb_cmap,
+                        highlight_words=sb_highset,
+                        return_freq=True
+                    )
+                    if fig_side_s and fig_side_i:
+                        side_sub = st.tabs(["📸 Static", "🔄 Interactive", "📊 Frequencies"])
+                        with side_sub[0]:
+                            st.pyplot(fig_side_s)
+                            plt.close(fig_side_s)
+                            add_download_buttons_wc(fig_side_s, None, prefix="side_by_side")
+                        with side_sub[1]:
+                            st.plotly_chart(fig_side_i, use_container_width=True)
+                        with side_sub[2]:
+                            if freq_side:
+                                left_df = pd.DataFrame(freq_side['left'], columns=['Word', 'Frequency'])
+                                right_df = pd.DataFrame(freq_side['right'], columns=['Word', 'Frequency'])
+                                st.markdown("**Left Side**")
+                                st.dataframe(left_df, use_container_width=True)
+                                st.markdown("**Right Side**")
+                                st.dataframe(right_df, use_container_width=True)
+                    else:
+                        st.warning("Not enough data for side-by-side wordcloud.")
+                else:
+                    st.info("Select at least one category for left and right sides.")
+            else:
+                st.warning("Please pick a 'Group By' variable for side-by-side comparison.")
+
+        # 4) Synonym Groups
+        with wc_tabs[3]:
+            st.info("Synonym groups can be managed in the sidebar above.")
+
+    elif st.session_state.selected_analysis == "Word Analysis":
+        st.markdown("## 📊 Word Analysis")
+        st.write(f"Analyzing **{open_var_options.get(chosen_var, chosen_var)}**")
+
+        # Each group
+        from sklearn.feature_extraction.text import CountVectorizer
+
+        for key_, arr_ in var_resps.items():
+            st.markdown(f"### {key_} ({len(arr_)} responses)")
+            if not arr_:
+                st.warning("No valid text found.")
+                continue
+
+            # Clean
+            cleaned = [
+                process_text(tx, st.session_state.custom_stopwords, st.session_state.synonym_groups)
+                for tx in arr_ if isinstance(tx, str) and tx.strip()
+            ]
+            if not cleaned:
+                st.warning("No valid text after cleaning.")
+                continue
+
+            # Word Frequencies
+            st.markdown("#### Word Frequencies")
+            freq_vec = CountVectorizer(max_features=20, stop_words=list(st.session_state.custom_stopwords))
+            X_ = freq_vec.fit_transform(cleaned)
+            w_ = freq_vec.get_feature_names_out()
+            fr_ = X_.sum(axis=0).A1
+            df_freq = pd.DataFrame({'Word': w_, 'Frequency': fr_}).sort_values("Frequency", ascending=False)
+            fig_f = px.bar(df_freq, x='Word', y='Frequency', title=f"Top Words - {key_}")
+            st.plotly_chart(fig_f, use_container_width=True)
+
+            # Co-occurrence
+            st.markdown("#### Co-occurrence Network")
+            min_edge_ = st.slider("Minimum edge weight", 1, 10, 2, key=f"{key_}_minedge")
+            maxw__ = st.slider("Max # of words", 10, 100, 30, key=f"{key_}_maxwords")
+
+            net_vec = CountVectorizer(max_features=maxw__, stop_words=list(st.session_state.custom_stopwords))
+            XX_ = net_vec.fit_transform(cleaned)
+            wnames_ = net_vec.get_feature_names_out()
+            mat_ = (XX_.T @ XX_).toarray()
+            np.fill_diagonal(mat_, 0)
+
+            G_ = nx.Graph()
+            freq_ar = XX_.sum(axis=0).A1
+            for i, wnm in enumerate(wnames_):
+                G_.add_node(wnm, frequency=int(freq_ar[i]))
+
+            for i, j in combinations(range(len(wnames_)), 2):
+                w_ = mat_[i, j]
+                if w_ >= min_edge_:
+                    G_.add_edge(wnames_[i], wnames_[j], weight=w_)
+
+            pos_ = nx.spring_layout(G_, k=1 / np.sqrt(len(G_.nodes)), iterations=50)
+            edge_x, edge_y = [], []
+            for (na, nb, dic_) in G_.edges(data=True):
+                x0, y0 = pos_[na]
+                x1, y1 = pos_[nb]
+                edge_x.extend([x0, x1, None])
+                edge_y.extend([y0, y1, None])
+
+            edge_trace = go.Scatter(
+                x=edge_x, y=edge_y,
+                line=dict(width=1, color='#888'),
+                hoverinfo='none',
+                mode='lines', opacity=0.5
+            )
+
+            node_x, node_y, node_text, node_size = [], [], [], []
+            for node__ in G_.nodes():
+                xx, yy = pos_[node__]
+                node_x.append(xx)
+                node_y.append(yy)
+                fr_val = G_.nodes[node__]['frequency']
+                node_text.append(f"{node__} (freq={fr_val})")
+                node_size.append(np.sqrt(fr_val) * 10 + 5)
+
+            node_trace = go.Scatter(
+                x=node_x, y=node_y,
+                mode='markers+text',
+                text=list(G_.nodes()),
+                textposition='top center',
+                hoverinfo='text',
+                hovertext=node_text,
+                marker=dict(
+                    colorscale='YlOrRd',
+                    color=[G_.nodes()[n]['frequency'] for n in G_.nodes()],
+                    size=node_size,
+                    line_width=2
+                )
+            )
+            net_fig = go.Figure(data=[edge_trace, node_trace],
+                                layout=go.Layout(
+                                    title='Word Co-occurrence Network',
+                                    showlegend=False,
+                                    hovermode='closest',
+                                    width=800, height=800,
+                                    xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+                                    yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)
+                                ))
+            st.plotly_chart(net_fig, use_container_width=True)
+
+            st.markdown("#### Top Co-occurring Pairs")
+            pairs_ = []
+            for i in range(len(wnames_)):
+                for j in range(i + 1, len(wnames_)):
+                    co_val = mat_[i, j]
+                    if co_val > 0:
+                        pairs_.append({'Word1': wnames_[i], 'Word2': wnames_[j], 'Co-occurrences': int(co_val)})
+            if pairs_:
+                pair_df = pd.DataFrame(pairs_).sort_values("Co-occurrences", ascending=False).head(15)
+                st.dataframe(pair_df, use_container_width=True)
+
+    elif st.session_state.selected_analysis == "Topic Discovery":
+        st.markdown("## 🔍 Topic Discovery")
+        st.write(f"**Variable**: {open_var_options.get(chosen_var, chosen_var)}")
+
+        num_topics = st.slider("Number of Topics (K)", 2, 10, 4)
+        min_topic_size = st.slider("Min Topic Size (unused for basic KMeans)", 2, 5, 2)
+
+        emb_model = SentenceTransformer('all-MiniLM-L6-v2')
+        for key_, arr_ in var_resps.items():
+            st.subheader(f"{key_} ({len(arr_)} responses)")
+            cleaned_txts = [tx for tx in arr_ if isinstance(tx, str) and tx.strip()]
+            if len(cleaned_txts) < 20:
+                st.warning("Not enough data (<20) to do topic modeling.")
+                continue
+
+            embeddings_ = emb_model.encode(cleaned_txts, show_progress_bar=False)
+            kmeans_ = KMeans(n_clusters=num_topics, random_state=42).fit(embeddings_)
+
+            from collections import defaultdict
+
+            cluster_map = defaultdict(list)
+            for doc_, lbl_ in zip(cleaned_txts, kmeans_.labels_):
+                cluster_map[lbl_].append(doc_)
+
+            stats_list = []
+            cvec = CountVectorizer(max_features=10, stop_words=list(st.session_state.custom_stopwords))
+            for c_ in sorted(cluster_map.keys()):
+                group_docs = cluster_map[c_]
+                if not group_docs:
+                    continue
+                X_ = cvec.fit_transform(group_docs)
+                w_ = cvec.get_feature_names_out()
+                fr_ = X_.sum(axis=0).A1
+                top_ = sorted(zip(w_, fr_), key=lambda x: x[1], reverse=True)[:5]
+                stats_list.append({
+                    'Topic': c_,
+                    'Count': len(group_docs),
+                    'Top Terms': ", ".join([t[0] for t in top_])
+                })
+            st.dataframe(pd.DataFrame(stats_list), use_container_width=True)
+
+    elif st.session_state.selected_analysis == "Sentiment Analysis":
+        st.markdown("## ❤️ Sentiment Analysis")
+        st.write(f"**Variable**: {open_var_options.get(chosen_var, chosen_var)}")
+
+        if not chosen_grp:
+            st.warning("Please select a 'Group By' variable for sentiment comparison.")
+        else:
+            analyzer = SentimentIntensityAnalyzer()
+            results_dict = defaultdict(lambda: {'count': 0, 'pos': 0, 'neg': 0, 'neu': 0, 'scores': []})
+
+            for key_, texts_ in var_resps.items():
+                for txt_ in texts_:
+                    if not isinstance(txt_, str) or not txt_.strip():
+                        continue
+                    sc = analyzer.polarity_scores(txt_)
+                    results_dict[key_]['count'] += 1
+                    results_dict[key_]['scores'].append(sc['compound'])
+                    if sc['compound'] >= 0.05:
+                        results_dict[key_]['pos'] += 1
+                    elif sc['compound'] <= -0.05:
+                        results_dict[key_]['neg'] += 1
+                    else:
+                        results_dict[key_]['neu'] += 1
+
+            # Distribution
+            points_data = []
+            for gkey, stats_ in results_dict.items():
+                for val_ in stats_['scores']:
+                    points_data.append({'Group': gkey, 'Compound': val_})
+
+            if points_data:
+                df_vio = pd.DataFrame(points_data)
+                fig_vio = px.violin(df_vio, x='Group', y='Compound', box=True, points='all')
+                st.plotly_chart(fig_vio, use_container_width=True)
+            else:
+                st.warning("No sentiment data found.")
+
+            # Summaries
+            sum_rows = []
+            for gkey, stats_ in results_dict.items():
+                c_ = stats_['count']
+                if c_ > 0:
+                    avg_c = np.mean(stats_['scores'])
+                    p_ = (stats_['pos'] / c_) * 100
+                    n_ = (stats_['neg'] / c_) * 100
+                    u_ = (stats_['neu'] / c_) * 100
+                    sum_rows.append({
+                        'Group': gkey,
+                        'Total': c_,
+                        'Positive%': f"{p_:.1f}",
+                        'Neutral%': f"{u_:.1f}",
+                        'Negative%': f"{n_:.1f}",
+                        'AvgCompound': f"{avg_c:.3f}"
+                    })
+            if sum_rows:
+                st.dataframe(pd.DataFrame(sum_rows), use_container_width=True)
+
+    elif st.session_state.selected_analysis == "Theme Evolution":
+        st.markdown("## 🌊 Theme Evolution")
+        st.info("Explore how themes evolve across different groups/time. Adjust parameters below.")
+
+        # Build texts_by_group
+        group_texts = defaultdict(list)
+        for key_, arr_ in var_resps.items():
+            label_ = key_
+            if chosen_grp:
+                parts = key_.split('_', 1)
+                if len(parts) == 2:
+                    label_ = parts[1]
+            group_texts[label_].extend(arr_)
+
+        if group_texts:
+            n_th = st.slider("Number of Themes (bigrams/trigrams)", 3, 10, 5)
+            min_fr = st.slider("Minimum frequency for each bigram/trigram", 2, 10, 3)
+
+            evo_data = calculate_theme_evolution(dict(group_texts), num_themes=n_th, min_freq=min_fr)
+
+            colA, colB = st.columns(2)
+            with colA:
+                sankey_fig = create_theme_flow_diagram(evo_data)
+                if sankey_fig:
+                    st.plotly_chart(sankey_fig, use_container_width=True)
+                else:
+                    st.warning("Not enough data for the Theme Flow Diagram.")
+
+            with colB:
+                heatmap_fig = create_theme_heatmap(evo_data)
+                if heatmap_fig:
+                    st.plotly_chart(heatmap_fig, use_container_width=True)
+                else:
+                    st.warning("Not enough data for the Theme Heatmap.")
+        else:
+            st.warning("No data found for Theme Evolution.")
