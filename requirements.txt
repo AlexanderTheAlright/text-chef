@@ -1,19 +1,13 @@
 streamlit
-pandas
 numpy
-wordcloud
+pandas
 matplotlib
 plotly
 scikit-learn
-bertopic
-vaderSentiment
 networkx
-openpyxl
-xlrd
-ntlk
-xlsxwriter
-python-dateutil
+nltk
+wordcloud
 sentence-transformers
-regex
-collections-extended
+vaderSentiment
+openpyxl
 
