@@ -865,73 +865,100 @@ def render_open_coding_interface(variable,
 
 
 ###############################################################################
-# 7) WORDCLOUD FUNCTIONS (SUB-TABS)
+# 7) WORDCLOUD FUNCTIONS
 ###############################################################################
 
-def generate_wordcloud_data(texts, stopwords=None, synonyms=None, max_words=200):
-    """Return (joined_text, sorted_freq)"""
-    from collections import Counter
-    if not texts:
-        return None, None
+################################################################################
+# WORDCLOUD FUNCTIONS (UPDATED)
+################################################################################
 
-    processed = []
-    for t in texts:
-        if isinstance(t, str):
-            clean = process_text(t, stopwords=stopwords, synonym_groups=synonyms)
-            if clean: processed.append(clean)
-    if not processed:
-        return None, None
+################################################################################
+# WORDCLOUD FUNCTIONS (FIXED & UPDATED)
+################################################################################
 
-    joined = ' '.join(processed)
-    words = joined.split()
-    freq = Counter(words)
-    sorted_freq = sorted(freq.items(), key=lambda x: x[1], reverse=True)[:max_words]
-    return joined, sorted_freq
+def generate_word_freq(texts, exact_words=200):
+    """
+    Process a list of strings, return the top N (exact_words) list of (word, freq).
+    If fewer than exact_words are available, return all of them.
+    """
+    cleaned_texts = []
+    for txt in texts:
+        if isinstance(txt, str) and txt.strip():
+            proc = process_text(txt, st.session_state.custom_stopwords, st.session_state.synonym_groups)
+            if proc:
+                cleaned_texts.append(proc)
+    if not cleaned_texts:
+        return []
 
-def create_interactive_wordcloud(word_freq, colormap='viridis', highlight_words=None, title=''):
-    """Plotly-based interactive wordcloud scatter plot."""
-    if not word_freq:
+    merged = ' '.join(cleaned_texts)
+    freq_counter = Counter(merged.split())
+    most_common = freq_counter.most_common(exact_words)
+    return most_common
+
+
+def generate_interactive_wordcloud(freq_data, highlight_words=None, title='', exact_words=200, colormap='viridis'):
+    """
+    Returns a Plotly figure (scatter-based wordcloud).
+    - highlight_words (set): highlight in a viridis-like color (#443983), else grey
+    - exact_words: top words to consider (already truncated in freq_data).
+    - colormap is only used if highlight_words is empty; otherwise highlight logic is used.
+    """
+    if not freq_data:
         return None
 
-    import plotly.graph_objects as go
-    import plotly.express as px
+    # Ensure freq_data has at most 'exact_words'
+    freq_data = freq_data[:exact_words]
+
+    words = [w for w, _ in freq_data]
+    freqs = [f for _, f in freq_data]
+    max_f = max(freqs) if freqs else 1
+    sizes = [20 + (f / max_f) * 60 for f in freqs]
+
     import numpy as np
-
-    words, freqs = zip(*word_freq)
-    max_f = max(freqs)
-    sizes = [20 + (f/max_f)*60 for f in freqs]
-    def pick_color(word, freq_):
-        if highlight_words and word.lower() in highlight_words:
-            return "red"
-        return px.colors.sample_colorscale(colormap, freq_/max_f)[0]
-    colors = [pick_color(w, f) for w, f in zip(words, freqs)]
-
-    # spiral
+    golden_ratio = (1 + 5**0.5) / 2
     positions = []
-    golden_ratio = (1 + 5**0.5)/2
     for i, f_val in enumerate(freqs):
-        r = 1.5*(1 - f_val/max_f)*300
-        theta = i * 2*np.pi*golden_ratio
-        x = r*np.cos(theta)
-        y = r*np.sin(theta)
-        positions.append((x,y))
-    x_vals, y_vals = zip(*positions)
+        # Spiral-ish layout
+        r = (1 - f_val / max_f) * 200
+        theta = i * 2 * np.pi * golden_ratio
+        x = r * np.cos(theta)
+        y = r * np.sin(theta)
+        positions.append((x, y))
 
     def nearest_terms(idx, k=3):
         xi, yi = positions[idx]
         dists = []
         for j, (xx, yy) in enumerate(positions):
-            if j!=idx:
-                d_sq = (xi-xx)**2 + (yi-yy)**2
-                dists.append((d_sq,j))
+            if j != idx:
+                d_sq = (xi - xx)**2 + (yi - yy)**2
+                dists.append((d_sq, j))
         dists.sort(key=lambda x: x[0])
         neigh = [words[d[1]] for d in dists[:k]]
         return ", ".join(neigh)
 
     custom_data = []
-    for i, w in enumerate(words):
-        custom_data.append((freqs[i], w, nearest_terms(i,3)))
+    color_list = []
 
+    # If highlight set is provided, highlight in viridis-like color (#443983), else grey
+    if highlight_words:
+        for i, w in enumerate(words):
+            highlight = (w.lower() in highlight_words)
+            color_list.append("#443983" if highlight else "gray")
+            custom_data.append((freqs[i], w, nearest_terms(i, 3)))
+    else:
+        # Use chosen colormap via matplotlib, fix the randint usage:
+        import matplotlib as mpl
+        selected_cmap = mpl.cm.get_cmap(colormap)
+        import random
+        random_state = np.random.RandomState(42)
+
+        for i, w in enumerate(words):
+            color_idx = random_state.randint(0, 256)  # <-- FIX: specify (low, high)
+            r, g, b, _ = selected_cmap(color_idx / 255.0)
+            color_list.append(f"rgb({int(r*255)}, {int(g*255)}, {int(b*255)})")
+            custom_data.append((freqs[i], w, nearest_terms(i, 3)))
+
+    x_vals, y_vals = zip(*positions)
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=x_vals,
@@ -940,7 +967,7 @@ def create_interactive_wordcloud(word_freq, colormap='viridis', highlight_words=
         mode='text+markers',
         textposition='middle center',
         marker=dict(size=1, color='rgba(0,0,0,0)'),
-        textfont=dict(size=sizes, color=colors),
+        textfont=dict(size=sizes, color=color_list),
         customdata=custom_data,
         hovertemplate=(
             "<b>%{customdata[1]}</b><br>"
@@ -952,386 +979,295 @@ def create_interactive_wordcloud(word_freq, colormap='viridis', highlight_words=
         title=title,
         showlegend=False,
         hovermode='closest',
-        width=1000, height=800,
-        xaxis=dict(showgrid=False, showticklabels=False, zeroline=False, range=[-1000,1000]),
-        yaxis=dict(showgrid=False, showticklabels=False, zeroline=False, range=[-1000,1000],
+        width=900, height=700,
+        xaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
+        yaxis=dict(showgrid=False, showticklabels=False, zeroline=False,
                    scaleanchor='x', scaleratio=1),
-        margin=dict(t=50,b=50,l=50,r=50)
+        margin=dict(t=50, b=50, l=50, r=50)
     )
     return fig
 
-def add_download_buttons_wc(fig_or_wc, word_freq, prefix="wordcloud", suffix=""):
-    """Add PNG & CSV downloads for a WordCloud or Matplotlib figure + frequencies."""
-    buffer = BytesIO()
-    if hasattr(fig_or_wc, 'savefig'):
-        # it's a figure
-        fig_or_wc.savefig(buffer, format='png', dpi=300, bbox_inches='tight')
-    elif hasattr(fig_or_wc, 'to_image'):
-        # it's a WordCloud object
-        fig_or_wc.to_image().save(buffer, format='PNG', optimize=True)
-    else:
-        st.warning("No valid image data to download.")
+
+def render_wordclouds(var_resps):
+    """
+    Updated Word Cloud UI with separate quadrant boxes:
+      - 1: Select how many quadrants (1..4)
+      - 2: For each quadrant, pick one or more categories
+      - 3: EXACT number of words
+      - 4: Choose color scheme for non-highlight
+      - 5: Highlight words
+      - Download CSVs for each quadrant and a combined CSV for all quadrants
+    """
+    st.markdown("## 🎨 Word Clouds")
+
+    # 1) Quadrant layout
+    layout_choice = st.selectbox("Number of quadrants", [1, 2, 3, 4], index=0)
+
+    # 2) For each quadrant, let user pick categories from var_resps
+    groups_available = sorted(list(var_resps.keys()))
+    quadrant_selections = {}
+    for q_idx in range(layout_choice):
+        quadrant_label = f"Quadrant {chr(65 + q_idx)}"  # e.g. Quadrant A, B...
+        quadrant_selections[quadrant_label] = st.multiselect(
+            f"Select categories for {quadrant_label}",
+            groups_available,
+            []
+        )
+
+    # 3) EXACT number of words
+    exact_words = st.slider("Exact number of words per quadrant", min_value=10, max_value=300, value=50, step=10)
+
+    # 4) Color scheme for non-highlight
+    color_schemes = ["viridis", "plasma", "inferno", "magma", "cividis", "winter", "coolwarm", "bone", "terrain", "twilight"]
+    chosen_cmap = st.selectbox("Color Scheme (if no highlights)", color_schemes, index=0)
+
+    # 5) Highlight words
+    highlight_input = st.text_area("Highlight words (one per line)", "")
+    highlight_set = {h.strip().lower() for h in highlight_input.split('\n') if h.strip()}
+
+    # Gather text for each quadrant
+    quadrant_texts = {}
+    for quad_label, cat_list in quadrant_selections.items():
+        combined_texts = []
+        for cat in cat_list:
+            combined_texts.extend(var_resps[cat])
+        quadrant_texts[quad_label] = combined_texts
+
+    # If everything is empty, warn and return
+    nonempty_quadrants = any(len(txts) > 0 for txts in quadrant_texts.values())
+    if not nonempty_quadrants:
+        st.warning("No groups selected or no data to show.")
         return
-    buffer.seek(0)
-    fname_png = f"{prefix}{('_'+suffix if suffix else '')}.png"
-    st.download_button(
-        label="💾 Download PNG",
-        data=buffer,
-        file_name=fname_png,
-        mime="image/png",
-        use_container_width=True
-    )
-    if word_freq:
-        df = pd.DataFrame(word_freq, columns=['word','frequency'])
-        csv_data = df.to_csv(index=False).encode('utf-8')
-        fname_csv = f"{prefix}_freq{('_'+suffix if suffix else '')}.csv"
+
+    # Build freq data for each quadrant
+    quadrant_freqs = {}
+    for quad_label, txt_list in quadrant_texts.items():
+        freq_ = generate_word_freq(txt_list, exact_words=exact_words)
+        quadrant_freqs[quad_label] = freq_
+
+    # TABS
+    tabs = st.tabs(["📸 Static", "🔄 Interactive", "📊 Frequencies"])
+
+    #######################################################
+    # STATIC
+    #######################################################
+    with tabs[0]:
+        fig_cols = 2 if layout_choice > 1 else 1
+        fig_rows = (layout_choice + 1) // 2 if layout_choice > 2 else (1 if layout_choice < 3 else 2)
+        fig = plt.figure(figsize=(8 * fig_cols, 6 * fig_rows))
+        gs = fig.add_gridspec(fig_rows, fig_cols)
+
+        idx = 0
+        for quad_label, freq_dat in quadrant_freqs.items():
+            row_ = idx // fig_cols
+            col_ = idx % fig_cols
+            ax_ = fig.add_subplot(gs[row_, col_])
+
+            if freq_dat:
+                # Build a WordCloud using highlight or colormap
+                if highlight_set:
+                    def color_func(word, *args, **kwargs):
+                        return "rgb(68, 57, 131)" if word.lower() in highlight_set else "hsl(0, 0%, 55%)"
+                    wc = WordCloud(
+                        width=800,
+                        height=600,
+                        background_color='white',
+                        collocations=False,
+                        max_words=exact_words,
+                        color_func=color_func
+                    )
+                else:
+                    import matplotlib.cm as cm
+                    selected_cmap = cm.get_cmap(chosen_cmap)
+                    random_state = np.random.RandomState(42)
+                    def color_func(word, font_size, position, orientation, random_state=random_state, **kwargs):
+                        color_idx = random_state.randint(0, 256)
+                        r, g, b, _ = selected_cmap(color_idx / 255.0)
+                        return f"rgb({int(r * 255)}, {int(g * 255)}, {int(b * 255)})"
+                    wc = WordCloud(
+                        width=800,
+                        height=600,
+                        background_color='white',
+                        collocations=False,
+                        max_words=exact_words,
+                        color_func=color_func
+                    )
+
+                # Rebuild text from frequencies
+                word_list = []
+                for w, f in freq_dat:
+                    word_list.extend([w] * f)
+                joined_text = ' '.join(word_list)
+                wc.generate(joined_text)
+
+                ax_.imshow(wc, interpolation='bilinear')
+                ax_.axis('off')
+            else:
+                ax_.text(0.5, 0.5, "No data", ha='center', va='center', fontsize=14)
+            idx += 1
+
+        st.pyplot(fig)
+        # Download PNG
+        buf = BytesIO()
+        fig.savefig(buf, format='png', dpi=300, bbox_inches='tight')
+        buf.seek(0)
         st.download_button(
-            label="📊 Download Frequencies (CSV)",
-            data=csv_data,
-            file_name=fname_csv,
-            mime="text/csv",
+            "💾 Download PNG",
+            data=buf.getvalue(),
+            file_name="wordcloud_quadrants.png",
+            mime="image/png",
             use_container_width=True
         )
+        plt.close(fig)
 
+        # Also let user download frequencies used in this static view
+        # Combined Frequencies
+        with st.expander("Download Frequencies (Static View)"):
+            # Combined
+            all_freq_rows = []
+            for quad_label, freq_d in quadrant_freqs.items():
+                for w, f in freq_d:
+                    all_freq_rows.append({'Quadrant': quad_label, 'Word': w, 'Frequency': f})
+            if all_freq_rows:
+                freqdf = pd.DataFrame(all_freq_rows)
+                freq_csv = freqdf.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    "Download All Quadrants CSV",
+                    data=freq_csv,
+                    file_name="wordcloud_all_quadrants_static.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+            # Quadrant by quadrant
+            for quad_label, freq_d in quadrant_freqs.items():
+                st.markdown(f"**{quad_label}**")
+                if freq_d:
+                    df_ = pd.DataFrame(freq_d, columns=['Word', 'Frequency'])
+                    freq_csv = df_.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        f"Download {quad_label} CSV",
+                        data=freq_csv,
+                        file_name=f"wordcloud_{quad_label.replace(' ','_')}_static.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+                else:
+                    st.write("No data.")
 
-def generate_wordcloud(
-    texts, stopwords=None, synonyms=None, colormap='viridis',
-    highlight_words=None, return_freq=False
-):
-    """Return (wc_static, wc_interactive, freq) or None if empty."""
-    joined, freq_ = generate_wordcloud_data(texts, stopwords, synonyms)
-    if not joined or not freq_:
-        return None, None, None
-
-    def color_func(word, *args, **kwargs):
-        if highlight_words and word.lower() in highlight_words:
-            return "hsl(0, 100%, 50%)"
-        return None
-
-    try:
-        wc_obj = WordCloud(
-            width=1200,
-            height=600,
-            background_color='white',
-            colormap=colormap if not highlight_words else None,
-            color_func=color_func if highlight_words else None,
-            stopwords=stopwords if stopwords else set(),
-            collocations=False,
-            max_words=200
-        ).generate(joined)
-
-        # Interactive
-        iwc = create_interactive_wordcloud(freq_, colormap, highlight_words)
-        if return_freq:
-            return wc_obj, iwc, freq_
-        else:
-            return wc_obj, iwc, None
-    except Exception as e:
-        st.error(f"Error generating wordcloud: {e}")
-        return None, None, None
-
-def generate_comparison_wordcloud(
-    texts1, texts2, stopwords=None, synonyms=None,
-    colormap='viridis', highlight_words=None,
-    main_title="", subtitle="", source_text="",
-    label1="Group 1", label2="Group 2"
-):
-    """
-    Create a side-by-side comparison of two sets of texts.
-    Returns (fig_static, fig_interactive) or (None, None) if missing data.
-    """
-    txt1, wf1 = generate_wordcloud_data(texts1, stopwords, synonyms)
-    txt2, wf2 = generate_wordcloud_data(texts2, stopwords, synonyms)
-    if not txt1 or not txt2:
-        return None, None
-
-    # ---- Static figure ----
-    fig_static = plt.figure(figsize=(20, 10))
-    gs = fig_static.add_gridspec(1, 2)
-    fig_static.patch.set_facecolor('white')
-
-    def color_func(word, *args, **kwargs):
-        if highlight_words and word.lower() in highlight_words:
-            return "hsl(0, 100%, 50%)"
-        return None
-
-    # Left
-    ax_left = fig_static.add_subplot(gs[0])
-    wc_left = WordCloud(
-        width=1000, height=800,
-        background_color='white',
-        colormap=colormap if not highlight_words else None,
-        color_func=color_func if highlight_words else None,
-        stopwords=stopwords if stopwords else set(),
-        collocations=False,
-        max_words=150
-    ).generate(txt1)
-    ax_left.imshow(wc_left, interpolation='bilinear')
-    ax_left.axis('off')
-    ax_left.set_title(label1, fontsize=16, fontweight='bold')
-
-    # Right
-    ax_right = fig_static.add_subplot(gs[1])
-    wc_right = WordCloud(
-        width=1000, height=800,
-        background_color='white',
-        colormap=colormap if not highlight_words else None,
-        color_func=color_func if highlight_words else None,
-        stopwords=stopwords if stopwords else set(),
-        collocations=False,
-        max_words=150
-    ).generate(txt2)
-    ax_right.imshow(wc_right, interpolation='bilinear')
-    ax_right.axis('off')
-    ax_right.set_title(label2, fontsize=16, fontweight='bold')
-
-    if subtitle:
-        fig_static.suptitle(f"{main_title}\n{subtitle}", y=0.95)
-    elif main_title:
-        fig_static.suptitle(main_title, y=0.95)
-    if source_text:
-        fig_static.text(0.01, 0.01, f"Source: {source_text}", color='gray')
-
-    # ---- Interactive figure ----
-    fig_interactive = make_subplots(rows=1, cols=2, subplot_titles=[label1, label2])
-    iwc1 = create_interactive_wordcloud(wf1, colormap, highlight_words=highlight_words)
-    iwc2 = create_interactive_wordcloud(wf2, colormap, highlight_words=highlight_words)
-    if iwc1:
-        for trace in iwc1.data:
-            fig_interactive.add_trace(trace, row=1, col=1)
-    if iwc2:
-        for trace in iwc2.data:
-            fig_interactive.add_trace(trace, row=1, col=2)
-
-    fig_interactive.update_layout(
-        title={
-            'text': (f"{main_title}<br><sup>{subtitle}</sup>" if subtitle else main_title),
-            'x': 0.5, 'y': 0.95,
-            'xanchor': 'center', 'yanchor': 'top'
-        },
-        showlegend=False,
-        width=1600, height=800
-    )
-    if source_text:
-        fig_interactive.add_annotation(
-            text=f"Source: {source_text}", xref="paper", yref="paper",
-            x=0.01, y=-0.05, showarrow=False, font=dict(size=10, color='gray')
-        )
-
-    return fig_static, fig_interactive
-
-def generate_combined_comparison_wordcloud(
-    texts_by_group,
-    categories_side1,
-    categories_side2,
-    stopwords=None,
-    synonyms=None,
-    colormap='viridis',
-    highlight_words=None,
-    return_freq=False
-):
-    """
-    Compare two sets of categories by merging them into "left" vs. "right" for a big side-by-side wordcloud.
-    texts_by_group: dict { category_name -> [list of strings] }
-    categories_side1: list of categories (keys in texts_by_group) for left side
-    categories_side2: list of categories (keys in texts_by_group) for right side
-
-    return_freq: if True, return {'left': [...], 'right': [...]}
-    """
-    left_texts = []
-    for cat in categories_side1:
-        if cat in texts_by_group:
-            left_texts += texts_by_group[cat]
-
-    right_texts = []
-    for cat in categories_side2:
-        if cat in texts_by_group:
-            right_texts += texts_by_group[cat]
-
-    if not left_texts or not right_texts:
-        return None, None, None if return_freq else (None, None)
-
-    txt_left, freq_left = generate_wordcloud_data(left_texts, stopwords, synonyms)
-    txt_right, freq_right = generate_wordcloud_data(right_texts, stopwords, synonyms)
-    if not txt_left or not txt_right:
-        return None, None, None if return_freq else (None, None)
-
-    # STATIC
-    fig_static = plt.figure(figsize=(24, 12))
-    gs = fig_static.add_gridspec(1, 2, wspace=0.1)
-    fig_static.patch.set_facecolor('white')
-
-    def color_func(word, *args, **kwargs):
-        if highlight_words and word.lower() in highlight_words:
-            return "hsl(0, 100%, 50%)"
-        return None
-
-    # Left
-    ax_left = fig_static.add_subplot(gs[0])
-    wc_left = WordCloud(
-        width=2000, height=1200,
-        background_color='white',
-        colormap=colormap if not highlight_words else None,
-        color_func=color_func if highlight_words else None,
-        stopwords=stopwords if stopwords else set(),
-        collocations=False,
-        max_words=150
-    ).generate(txt_left)
-    ax_left.imshow(wc_left, interpolation='bilinear')
-    ax_left.axis('off')
-
-    # Right
-    ax_right = fig_static.add_subplot(gs[1])
-    wc_right = WordCloud(
-        width=2000, height=1200,
-        background_color='white',
-        colormap=colormap if not highlight_words else None,
-        color_func=color_func if highlight_words else None,
-        stopwords=stopwords if stopwords else set(),
-        collocations=False,
-        max_words=150
-    ).generate(txt_right)
-    ax_right.imshow(wc_right, interpolation='bilinear')
-    ax_right.axis('off')
-
+    #######################################################
     # INTERACTIVE
-    fig_interactive = make_subplots(rows=1, cols=2, horizontal_spacing=0.05)
-    iwc_left = create_interactive_wordcloud(freq_left, colormap, highlight_words=highlight_words)
-    iwc_right = create_interactive_wordcloud(freq_right, colormap, highlight_words=highlight_words)
-    if iwc_left:
-        for trace in iwc_left.data:
-            fig_interactive.add_trace(trace, row=1, col=1)
-    if iwc_right:
-        for trace in iwc_right.data:
-            fig_interactive.add_trace(trace, row=1, col=2)
+    #######################################################
+    with tabs[1]:
+        rows_ = (layout_choice + 1) // 2 if layout_choice > 2 else (1 if layout_choice < 3 else 2)
+        cols_ = 2 if layout_choice > 1 else 1
 
-    fig_interactive.update_layout(
-        showlegend=False,
-        width=2000, height=1000,
-        margin=dict(t=20, b=20, l=20, r=20),
-        template='plotly_white'
-    )
-    fig_interactive.update_xaxes(showgrid=False, showticklabels=False, zeroline=False)
-    fig_interactive.update_yaxes(showgrid=False, showticklabels=False, zeroline=False)
+        fig = make_subplots(rows=rows_, cols=cols_, subplot_titles=[k for k in quadrant_freqs.keys()])
+        idx = 1
+        for quad_label, freq_dat in quadrant_freqs.items():
+            row_ = (idx - 1) // cols_ + 1
+            col_ = (idx - 1) % cols_ + 1
 
-    freq_dict = None
-    if return_freq:
-        freq_dict = {
-            'left': freq_left,
-            'right': freq_right
-        }
-    return fig_static, fig_interactive, freq_dict
+            iwc = generate_interactive_wordcloud(
+                freq_dat,
+                highlight_words=highlight_set,
+                title='',
+                exact_words=exact_words,
+                colormap=chosen_cmap
+            )
+            if iwc:
+                for trace in iwc.data:
+                    fig.add_trace(trace, row=row_, col=col_)
+                fig.update_xaxes(visible=False, showgrid=False, zeroline=False, row=row_, col=col_)
+                fig.update_yaxes(visible=False, showgrid=False, zeroline=False, row=row_, col=col_)
 
-def generate_multi_group_wordcloud(
-    texts_by_group, stopwords=None, synonyms=None, colormap='viridis',
-    highlight_words=None, main_title="", subtitle="", source_text="",
-    return_freq=False
-):
-    """
-    Generate up to 4 wordclouds side-by-side (2x2).
-    texts_by_group: dict of {group_name -> list of strings}
-    return_freq: if True, return a dict of group->[(word, freq),...]
+            idx += 1
 
-    Returns:
-        fig_static, fig_interactive, group_freqs (or None)
-    """
-    if len(texts_by_group) > 4:
-        raise ValueError("Maximum 4 groups supported in this function.")
-
-    group_names = list(texts_by_group.keys())
-    n_groups = len(group_names)
-    if n_groups < 1:
-        return None, None, None
-
-    import math
-    rows = math.ceil(n_groups / 2)
-    cols = 2 if n_groups > 1 else 1
-
-    # Prepare static figure
-    fig_static = plt.figure(figsize=(16, 14))
-    gs = fig_static.add_gridspec(rows, cols)
-    fig_static.patch.set_facecolor('white')
-
-    # Prepare interactive
-    fig_interactive = make_subplots(
-        rows=rows, cols=cols,
-        subplot_titles=group_names,
-        vertical_spacing=0.15, horizontal_spacing=0.1
-    )
-    group_freqs = {} if return_freq else None
-
-    def color_func(word, *args, **kwargs):
-        if highlight_words and word.lower() in highlight_words:
-            return "hsl(0, 100%, 50%)"
-        return None
-
-    idx = 0
-    for g_name in group_names:
-        row = idx // 2 + 1
-        col = idx % 2 + 1
-        idx += 1
-
-        joined_text, word_freq = generate_wordcloud_data(
-            texts_by_group[g_name],
-            stopwords=stopwords,
-            synonyms=synonyms
+        fig.update_layout(
+            width=1000 + 400 * (cols_ - 1),
+            height=600 * rows_,
+            showlegend=False,
+            margin=dict(t=50, b=50, l=50, r=50),
+            title="",
         )
-        if not joined_text or not word_freq:
-            continue
+        st.plotly_chart(fig, use_container_width=True)
 
-        if group_freqs is not None:
-            group_freqs[g_name] = word_freq
+        # Combined CSV (interactive view)
+        with st.expander("Download Frequencies (Interactive View)"):
+            all_freq_rows = []
+            for quad_label, freq_d in quadrant_freqs.items():
+                for w, f in freq_d:
+                    all_freq_rows.append({'Quadrant': quad_label, 'Word': w, 'Frequency': f})
+            if all_freq_rows:
+                freqdf = pd.DataFrame(all_freq_rows)
+                freq_csv = freqdf.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    "Download All Quadrants CSV",
+                    data=freq_csv,
+                    file_name="wordcloud_all_quadrants_interactive.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
 
-        # Static
-        ax = fig_static.add_subplot(gs[idx - 1])
-        try:
-            wc_temp = WordCloud(
-                width=800, height=600,
-                background_color='white',
-                colormap=colormap if not highlight_words else None,
-                color_func=color_func if highlight_words else None,
-                stopwords=stopwords if stopwords else set(),
-                collocations=False,
-                max_words=150,
-                prefer_horizontal=0.7
-            ).generate(joined_text)
-            ax.imshow(wc_temp, interpolation='bilinear')
-            ax.axis('off')
-            ax.set_title(f"{g_name}\n({len(texts_by_group[g_name])} responses)")
-        except Exception as e:
-            ax.text(0.5, 0.5, f"Error: {e}", ha='center', va='center')
+            # Download each quadrant's CSV
+            for quad_label, freq_d in quadrant_freqs.items():
+                st.markdown(f"**{quad_label}**")
+                if freq_d:
+                    df_ = pd.DataFrame(freq_d, columns=['Word', 'Frequency'])
+                    freq_csv = df_.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        f"Download {quad_label} CSV",
+                        data=freq_csv,
+                        file_name=f"wordcloud_{quad_label.replace(' ','_')}_interactive.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+                else:
+                    st.write("No data.")
 
-        # Interactive
-        iwc = create_interactive_wordcloud(word_freq, colormap, highlight_words=highlight_words)
-        if iwc:
-            for trace in iwc.data:
-                fig_interactive.add_trace(trace, row=row, col=col)
-            fig_interactive.update_xaxes(showgrid=False, showticklabels=False, zeroline=False, row=row, col=col)
-            fig_interactive.update_yaxes(showgrid=False, showticklabels=False, zeroline=False, row=row, col=col)
+    #######################################################
+    # FREQUENCIES TABLE
+    #######################################################
+    with tabs[2]:
+        st.markdown("### Frequency Tables")
+        for quad_label, freq_dat in quadrant_freqs.items():
+            st.subheader(quad_label)
+            if freq_dat:
+                df_ = pd.DataFrame(freq_dat, columns=['Word', 'Frequency'])
+                st.dataframe(df_, use_container_width=True)
+            else:
+                st.write("No data.")
 
-    fig_static.tight_layout()
-    if subtitle:
-        fig_static.suptitle(f"{main_title}\n{subtitle}", y=0.95)
-    elif main_title:
-        fig_static.suptitle(main_title, y=0.95)
-
-    fig_interactive.update_layout(
-        showlegend=False,
-        width=1600, height=rows * 600,
-        title=(f"{main_title}<br><sup>{subtitle}</sup>" if subtitle else main_title),
-        template='plotly_white'
-    )
-    if source_text:
-        fig_static.text(0.01, 0.01, f"Source: {source_text}", color='gray')
-        fig_interactive.add_annotation(
-            text=f"Source: {source_text}",
-            xref="paper", yref="paper",
-            x=0.01, y=-0.05,
-            showarrow=False,
-            font=dict(size=10, color='gray')
-        )
-
-    return fig_static, fig_interactive, group_freqs
+        # Combined CSV from the Frequencies Table
+        with st.expander("Download Frequencies (Table View)"):
+            all_freq_rows = []
+            for quad_label, freq_d in quadrant_freqs.items():
+                for w, f in freq_d:
+                    all_freq_rows.append({'Quadrant': quad_label, 'Word': w, 'Frequency': f})
+            if all_freq_rows:
+                freqdf = pd.DataFrame(all_freq_rows)
+                freq_csv = freqdf.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    "Download All Quadrants CSV",
+                    data=freq_csv,
+                    file_name="wordcloud_all_quadrants_table.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+            # Quadrant by quadrant
+            for quad_label, freq_d in quadrant_freqs.items():
+                st.markdown(f"**{quad_label}**")
+                if freq_d:
+                    df_ = pd.DataFrame(freq_d, columns=['Word', 'Frequency'])
+                    freq_csv = df_.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        f"Download {quad_label} CSV",
+                        data=freq_csv,
+                        file_name=f"wordcloud_{quad_label.replace(' ','_')}_table.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+                else:
+                    st.write("No data.")
 
 
 ###############################################################################
@@ -1512,6 +1448,256 @@ def create_topic_evolution(topic_model, texts_by_group):
 
     return None
 
+def create_3d_topic_visualization(df,
+                                  text_col="open_response",
+                                  topic_labels=None,
+                                  jobtitle_col="jobtitle",
+                                  age_col="age",
+                                  gender_col="gender",
+                                  region_col="region",
+                                  model_name='all-MiniLM-L6-v2',
+                                  n_components=3,
+                                  n_clusters=5,
+                                  random_state=42):
+    """
+    Create a 3D interactive scatter plot showing topics for each response.
+
+    Parameters:
+    -----------
+    df              : pd.DataFrame
+                     Must contain the open_response column plus columns for jobtitle, age, etc.
+    text_col        : str, name of the column with text
+    topic_labels    : List or dict that maps each row's topic index to a label or cluster name.
+                      If None, we'll just use KMeans with n_clusters.
+    jobtitle_col    : str, name of the job title column
+    age_col         : str, name of the age column
+    gender_col      : str, name of the gender column
+    region_col      : str, name of the region/state column
+    model_name      : str, the SentenceTransformer model to use
+    n_components    : int, dimension for TSNE (3 recommended here)
+    n_clusters      : int, how many clusters if we do a quick KMeans for topic labeling
+    random_state    : int, random seed
+
+    Returns:
+    --------
+    fig : Plotly Figure (3D scatter)
+    """
+
+    # Filter valid texts
+    df_valid = df.dropna(subset=[text_col]).copy()
+    df_valid = df_valid[df_valid[text_col].astype(str).str.strip() != ""]
+    if df_valid.empty:
+        st.warning("No valid text responses for 3D topic visualization.")
+        return None
+
+    # Embed
+    embedder = SentenceTransformer(model_name)
+    text_list = df_valid[text_col].astype(str).tolist()
+    embeddings = embedder.encode(text_list, show_progress_bar=False)
+
+    # If topic_labels isn't provided, we do a quick KMeans
+    if topic_labels is None:
+        from sklearn.cluster import KMeans
+        kmeans = KMeans(n_clusters=n_clusters, random_state=random_state).fit(embeddings)
+        df_valid["topic_label"] = kmeans.labels_
+        # We'll map cluster IDs to strings like "Topic 0", "Topic 1", ...
+        df_valid["topic_label"] = df_valid["topic_label"].apply(lambda x: f"Topic {x}")
+    else:
+        # We assume df already has a topic_label column matching each row
+        # Or topic_labels is a dictionary keyed by text or index
+        # e.g. df_valid["topic_label"] = [topic_labels.get(i, "Unknown") for i in df_valid.index]
+        if "topic_label" not in df_valid.columns:
+            # fallback: try to apply the dictionary
+            df_valid["topic_label"] = df_valid.index.map(lambda i: topic_labels.get(i, "Unknown"))
+
+    # TSNE 3D
+    tsne = TSNE(n_components=n_components, random_state=random_state)
+    reduced_3d = tsne.fit_transform(embeddings)
+
+    df_valid["x"] = reduced_3d[:, 0]
+    df_valid["y"] = reduced_3d[:, 1]
+    if n_components == 3:
+        df_valid["z"] = reduced_3d[:, 2]
+    else:
+        # fallback for 2D if n_components = 2
+        df_valid["z"] = 0.0
+
+    # Build hover text
+    # e.g. "Job: ...<br>Age: ...<br>Gender: ...<br>Region: ...<br>Response: ..."
+    hover_info = []
+    for idx, row in df_valid.iterrows():
+        job_ = str(row.get(jobtitle_col, ""))
+        age_ = str(row.get(age_col, ""))
+        gen_ = str(row.get(gender_col, ""))
+        reg_ = str(row.get(region_col, ""))
+        txt_ = str(row.get(text_col, ""))
+        htxt = f"Job: {job_}<br>Age: {age_}<br>Gender: {gen_}<br>Region: {reg_}<br>{txt_}"
+        hover_info.append(htxt)
+
+    df_valid["hover_text"] = hover_info
+
+    # Plot
+    fig = px.scatter_3d(
+        df_valid,
+        x="x", y="y", z="z",
+        color="topic_label",
+        hover_data={"hover_text": True, "x": False, "y": False, "z": False},
+        symbol=None
+    )
+    fig.update_traces(hovertemplate="%{customdata[0]}")
+    fig.update_layout(
+        title="3D Topic Visualization",
+        scene=dict(
+            xaxis_title="Dimension 1",
+            yaxis_title="Dimension 2",
+            zaxis_title="Dimension 3"
+        ),
+        legend_title_text="Topic"
+    )
+
+    return fig
+
+def integrate_sentiment_into_df(df, text_col="open_response"):
+    """
+    Example helper that adds sentiment info into a DataFrame using your existing
+    sentiment analysis function `analyze_sentiment`.
+    Modify if your function name/logic is different.
+
+    Returns:
+    --------
+    df_new : pd.DataFrame with new columns "sentiment_category" and "sentiment_compound"
+    """
+    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+    analyzer = SentimentIntensityAnalyzer()
+
+    df = df.copy()
+    cat_list = []
+    comp_list = []
+
+    for txt in df[text_col]:
+        if not isinstance(txt, str) or not txt.strip():
+            cat_list.append("Neutral")
+            comp_list.append(0.0)
+            continue
+        scores = analyzer.polarity_scores(txt)
+        comp = scores["compound"]
+        if comp >= 0.05:
+            cat = "Positive"
+        elif comp <= -0.05:
+            cat = "Negative"
+        else:
+            cat = "Neutral"
+        cat_list.append(cat)
+        comp_list.append(comp)
+
+    df["sentiment_category"] = cat_list
+    df["sentiment_compound"] = comp_list
+
+    return df
+
+def show_example_responses(df,
+                           text_col="open_response",
+                           group_col="group_var",
+                           topic_col="topic_label",
+                           sentiment_col="sentiment_category",
+                           theme_col="theme_label",
+                           max_examples=5):
+    """
+    Displays example responses in multiple tabs:
+      - By the grouping variable (group_col)
+      - By topic (topic_col)
+      - By sentiment (sentiment_col)
+      - By theme (theme_col)
+
+    Each tab will show sub-tabs for each category, and up to 'max_examples' random examples.
+    If you only want a subset, pass None for whichever grouping you don't need.
+
+    NOTE: Make sure your df has columns for each of these if you want them displayed.
+    """
+
+    import random
+
+    # We'll define a helper to build per-category random examples
+    def render_category_examples(subdf, category_value, text_column=text_col, max_n=5):
+        subdf = subdf.dropna(subset=[text_column])
+        subdf = subdf[subdf[text_column].astype(str).str.strip() != ""]
+        if subdf.empty:
+            st.write("No examples for this category.")
+            return
+        if len(subdf) <= max_n:
+            examples = subdf[text_column].tolist()
+        else:
+            examples = subdf.sample(n=max_n, random_state=42)[text_column].tolist()
+
+        for i, ex in enumerate(examples, 1):
+            st.markdown(f"**Example {i}:** {ex}")
+
+    # Build tabs
+    tabs_to_show = []
+    if group_col is not None and group_col in df.columns:
+        tabs_to_show.append("Grouped By Variable")
+    if topic_col is not None and topic_col in df.columns:
+        tabs_to_show.append("By Topic")
+    if sentiment_col is not None and sentiment_col in df.columns:
+        tabs_to_show.append("By Sentiment")
+    if theme_col is not None and theme_col in df.columns:
+        tabs_to_show.append("By Theme")
+
+    if not tabs_to_show:
+        st.warning("No valid grouping columns found (group_col, topic_col, sentiment_col, theme_col).")
+        return
+
+    main_tabs = st.tabs(tabs_to_show)
+
+    tab_index = 0
+    if "Grouped By Variable" in tabs_to_show:
+        with main_tabs[tab_index]:
+            st.subheader(f"Example Responses By '{group_col}'")
+            unique_vals = sorted([x for x in df[group_col].dropna().unique()])
+            sub_tabs = st.tabs([str(x) for x in unique_vals])
+            for i, val in enumerate(unique_vals):
+                with sub_tabs[i]:
+                    sub_ = df[df[group_col] == val]
+                    st.write(f"**Category**: {val}, total: {len(sub_)}")
+                    render_category_examples(sub_, val)
+        tab_index += 1
+
+    if "By Topic" in tabs_to_show:
+        with main_tabs[tab_index]:
+            st.subheader(f"Example Responses By '{topic_col}'")
+            unique_vals = sorted([x for x in df[topic_col].dropna().unique()])
+            sub_tabs = st.tabs([str(x) for x in unique_vals])
+            for i, val in enumerate(unique_vals):
+                with sub_tabs[i]:
+                    sub_ = df[df[topic_col] == val]
+                    st.write(f"**Topic**: {val}, total: {len(sub_)}")
+                    render_category_examples(sub_, val)
+        tab_index += 1
+
+    if "By Sentiment" in tabs_to_show:
+        with main_tabs[tab_index]:
+            st.subheader(f"Example Responses By '{sentiment_col}'")
+            unique_vals = sorted([x for x in df[sentiment_col].dropna().unique()])
+            sub_tabs = st.tabs([str(x) for x in unique_vals])
+            for i, val in enumerate(unique_vals):
+                with sub_tabs[i]:
+                    sub_ = df[df[sentiment_col] == val]
+                    st.write(f"**Sentiment**: {val}, total: {len(sub_)}")
+                    render_category_examples(sub_, val)
+        tab_index += 1
+
+    if "By Theme" in tabs_to_show:
+        with main_tabs[tab_index]:
+            st.subheader(f"Example Responses By '{theme_col}'")
+            unique_vals = sorted([x for x in df[theme_col].dropna().unique()])
+            sub_tabs = st.tabs([str(x) for x in unique_vals])
+            for i, val in enumerate(unique_vals):
+                with sub_tabs[i]:
+                    sub_ = df[df[theme_col] == val]
+                    st.write(f"**Theme**: {val}, total: {len(sub_)}")
+                    render_category_examples(sub_, val)
+        tab_index += 1
+
 ###############################################################################
 # 9) SENTIMENT ANALYSES
 ###############################################################################
@@ -1580,124 +1766,58 @@ def analyze_group_sentiment(texts_by_group):
 
     return sentiment_stats
 
-def create_sentiment_sunburst(sentiment_stats):
-    """Create a sunburst chart showing sentiment distribution by group."""
-    if not sentiment_stats:
-        return None
-
-    try:
-        # Prepare data for sunburst chart
-        labels = []
-        parents = []
-        values = []
-        colors = []
-
-        # Color scheme
-        color_map = {
-            'Positive': '#2ecc71',
-            'Neutral': '#f1c40f',
-            'Negative': '#e74c3c'
-        }
-
-        # Add root
-        total_responses = sum(stats['total'] for stats in sentiment_stats.values())
-        if total_responses == 0:
-            return None
-
-        labels.append('All Responses')
-        parents.append('')
-        values.append(total_responses)
-        colors.append('#3498db')
-
-        # Add groups and their sentiments
-        for group, stats in sentiment_stats.items():
-            if stats['total'] > 0:  # Only add groups with responses
-                # Add group
-                labels.append(str(group))
-                parents.append('All Responses')
-                values.append(stats['total'])
-                colors.append('#3498db')
-
-                # Add sentiments for this group
-                for sentiment in ['Positive', 'Neutral', 'Negative']:
-                    labels.append(f'{group} {sentiment}')
-                    parents.append(str(group))
-                    values.append(stats[sentiment.lower()])
-                    colors.append(color_map[sentiment])
-
-        if len(labels) <= 1:  # Check if we have enough data
-            return None
-
-        fig = go.Figure(go.Sunburst(
-            labels=labels,
-            parents=parents,
-            values=values,
-            branchvalues='total',
-            marker=dict(colors=colors),
-            hovertemplate='<b>%{label}</b><br>Responses: %{value}<br>Percentage: %{percentParent:.1f}%<extra></extra>'
-        ))
-
-        fig.update_layout(
-            width=800,
-            height=800,
-            title={
-                'text': 'Sentiment Distribution by Group',
-                'y': 0.95,
-                'x': 0.5,
-                'xanchor': 'center',
-                'yanchor': 'top',
-                'font': {'size': 24}
-            }
-        )
-
-        return fig
-    except Exception as e:
-        print(f"Error creating sunburst chart: {str(e)}")
-        return None
-
-def create_sentiment_radar(sentiment_stats):
+def create_sentiment_radar(sentiment_summary):
     """
-    Create a radar chart comparing sentiment metrics across groups.
+    Build a radar chart using a summary list of dicts that looks like:
+      [
+        {
+          'Group': ...,
+          'Total': ...,
+          'Positive%': ...,
+          'Neutral%': ...,
+          'Negative%': ...,
+          'AvgCompound': ...
+        },
+        ...
+      ]
+    We'll map:
+      Positive% -> radius
+      Neutral%  -> radius
+      Negative% -> radius
+      AvgCompound -> scaled from -1..1 to 0..100 for visualization.
     """
-    categories = ['Positive %', 'Neutral %', 'Negative %', 'Sentiment Score']
+    categories = ["Positive%", "Neutral%", "Negative%", "Compound(Scaled)"]
 
     fig = go.Figure()
-
-    for group, stats in sentiment_stats.items():
-        # Scale compound score to percentage for visualization
-        sentiment_score = (stats['avg_compound'] + 1) * 50  # Convert [-1,1] to [0,100]
+    for row in sentiment_summary:
+        grp = row["Group"]
+        try:
+            pos_val = float(row["Positive%"])
+            neu_val = float(row["Neutral%"])
+            neg_val = float(row["Negative%"])
+            # Convert compound (-1..1) into 0..100
+            avg_comp = float(row["AvgCompound"])
+            comp_scaled = (avg_comp + 1.0) * 50.0
+        except:
+            # If parsing fails, skip
+            continue
 
         fig.add_trace(go.Scatterpolar(
-            r=[stats['pos_pct'],
-               stats['neu_pct'],
-               stats['neg_pct'],
-               sentiment_score],
+            r=[pos_val, neu_val, neg_val, comp_scaled],
             theta=categories,
-            name=str(group),
             fill='toself',
-            hovertemplate='<b>%{theta}</b><br>Value: %{r:.1f}%<extra></extra>'
+            name=str(grp)
         ))
 
     fig.update_layout(
+        title="Sentiment Radar Chart",
         polar=dict(
-            radialaxis=dict(
-                visible=True,
-                range=[0, 100]
-            )
+            radialaxis=dict(visible=True, range=[0,100])
         ),
         showlegend=True,
-        title={
-            'text': 'Sentiment Metrics Comparison',
-            'y': 0.95,
-            'x': 0.5,
-            'xanchor': 'center',
-            'yanchor': 'top',
-            'font': {'size': 24}
-        },
-        width=800,
-        height=800
+        width=700,
+        height=600
     )
-
     return fig
 
 def create_sentiment_distribution(sentiment_stats):
@@ -1936,25 +2056,29 @@ def create_theme_flow_diagram(evolution_data):
     return fig
 
 def create_theme_heatmap(evolution_data):
-    """Create a heatmap showing theme intensity across groups."""
-    if not evolution_data['groups'] or not evolution_data['themes']:
-        return None
-
+    """
+    Create a heatmap showing theme intensity across groups with 'Viridis' colorscale.
+    """
     groups = evolution_data['groups']
     themes = evolution_data['themes']
     values = evolution_data['values']
 
-    values_array = np.array(values)
+    if not groups or not themes:
+        return None
+
+    import numpy as np
+    values_array = np.array(values)  # shape: (len(themes), len(groups))
     if values_array.size == 0 or values_array.max() == 0:
         return None
 
+    # We'll normalize for nice color range
     values_normalized = values_array / values_array.max()
 
     fig = go.Figure(data=go.Heatmap(
         z=values_normalized,
         x=groups,
         y=themes,
-        colorscale='Viridis',
+        colorscale='Viridis',  # <--- Make sure it's Viridis
         hoverongaps=False
     ))
 
@@ -1964,9 +2088,56 @@ def create_theme_heatmap(evolution_data):
         yaxis_title='Themes',
         height=600
     )
-
     return fig
 
+def create_theme_waterfall(evolution_data):
+    """
+    Create a single waterfall chart showing usage of the top theme across groups.
+    Picks the theme with the highest total usage (sum across all groups).
+    """
+    groups = evolution_data['groups']  # e.g. ['G1','G2', ...]
+    themes = evolution_data['themes']  # e.g. ['themeA','themeB',...]
+    values = evolution_data['values']  # list of lists, each row i -> theme i's usage per group
+
+    if not groups or not themes or not values:
+        return None
+
+    # Sum usage for each theme
+    theme_sums = []
+    for i, t in enumerate(themes):
+        total_usage = sum(values[i])
+        theme_sums.append((t, total_usage))
+
+    # Pick top theme
+    theme_sums.sort(key=lambda x: x[1], reverse=True)
+    if not theme_sums or theme_sums[0][1] == 0:
+        return None
+
+    top_theme, _ = theme_sums[0]
+    top_index = themes.index(top_theme)
+    usage_arr = values[top_index]  # usage across each group
+
+    measure_list = []
+    x_list = []
+    y_list = []
+    for grp_idx, grp_name in enumerate(groups):
+        measure_list.append('relative')
+        x_list.append(grp_name)
+        y_list.append(usage_arr[grp_idx])
+
+    fig = go.Figure(go.Waterfall(
+        name=top_theme,
+        orientation="v",
+        measure=measure_list,
+        x=x_list,
+        y=y_list,
+        textposition="outside"
+    ))
+    fig.update_layout(
+        title=f"Waterfall: usage changes for top theme '{top_theme}'",
+        height=400
+    )
+    return fig
 
 ###############################################################################
 # 11) APP LAYOUT (No Nested Expanders, Improved Aesthetics & Error Locations)
@@ -2099,197 +2270,36 @@ if st.session_state.file_processed and chosen_var:
 
     elif st.session_state.selected_analysis == "Word Cloud":
         st.markdown("## 🎨 Word Cloud")
-        st.write(f"**Variable:** {open_var_options.get(chosen_var, chosen_var)}")
-
-        # Sub-tabs for Word Cloud
-        wc_tabs = st.tabs([
-            "🖼 Single Wordcloud",
-            "🔢 Multi-Group (2x2)",
-            "⚖ Side-by-Side",
-            "🔗 Synonym Groups"
-        ])
-
-        # 1) Single Wordcloud
-        with wc_tabs[0]:
-            st.markdown("### Single Wordcloud per Survey/Group")
-            # No nested expanders - options are at the top level
-            col1, col2 = st.columns(2)
-            with col1:
-                wc_cmap = st.selectbox("Color Map", ['viridis', 'plasma', 'inferno', 'magma', 'cividis'])
-            with col2:
-                wc_highlight = st.text_area("Highlight words (one per line)", "")
-                highlight_set = {w.strip().lower() for w in wc_highlight.split('\n') if w.strip()}
-
-            # Generate for each group
-            for sid, arr in var_resps.items():
-                st.subheader(f"{sid} - {len(arr)} responses")
-                if not arr:
-                    st.warning("No valid responses here.")
-                    continue
-
-                wc_static, wc_interactive, freq_data = generate_wordcloud(
-                    arr,
-                    stopwords=st.session_state.custom_stopwords,
-                    synonyms=st.session_state.synonym_groups,
-                    colormap=wc_cmap,
-                    highlight_words=highlight_set,
-                    return_freq=True
-                )
-                if wc_static and wc_interactive:
-                    wc_sub = st.tabs(["📸 Static", "🔄 Interactive", "📊 Frequencies"])
-                    with wc_sub[0]:
-                        fig_, ax_ = plt.subplots(figsize=(12, 6))
-                        ax_.imshow(wc_static, interpolation='bilinear')
-                        ax_.axis('off')
-                        st.pyplot(fig_)
-                        plt.close(fig_)
-                        add_download_buttons_wc(wc_static, freq_data, prefix="wc_single", suffix=sid)
-                    with wc_sub[1]:
-                        st.plotly_chart(wc_interactive, use_container_width=True)
-                    with wc_sub[2]:
-                        freq_df_ = pd.DataFrame(freq_data, columns=['Word', 'Frequency'])
-                        st.dataframe(freq_df_, use_container_width=True)
-                else:
-                    st.warning("Unable to generate wordcloud. Possibly no valid text after cleaning.")
-
-        # 2) Multi-Group (2x2)
-        with wc_tabs[1]:
-            st.markdown("### Multi-Group Comparison (Up to 4 Groups)")
-            if chosen_grp:
-                # Attempt to parse group values
-                grpvals = set()
-                for k_ in var_resps.keys():
-                    parts = k_.split('_', maxsplit=1)
-                    if len(parts) == 2:
-                        grpvals.add(parts[1])
-
-                selected_groups = st.multiselect("Select up to 4 group values", sorted(grpvals), max_selections=4)
-                if selected_groups:
-                    # Build dict
-                    group_dict = {}
-                    for gv in selected_groups:
-                        all_txts = []
-                        for kk, arr_ in var_resps.items():
-                            if kk.endswith(f"_{gv}"):
-                                all_txts.extend(arr_)
-                        if all_txts:
-                            group_dict[gv] = all_txts
-
-                    # If we have data
-                    if group_dict:
-                        colA, colB = st.columns(2)
-                        with colA:
-                            mg_cmap = st.selectbox("Color Map", ['viridis', 'plasma', 'inferno', 'magma', 'cividis'])
-                        with colB:
-                            mg_highlight = st.text_area("Highlight words (one per line)", "")
-                            mg_highlight_set = {h.strip().lower() for h in mg_highlight.split('\n') if h.strip()}
-
-                        fig_s, fig_i, freq_dict = generate_multi_group_wordcloud(
-                            group_dict,
-                            stopwords=st.session_state.custom_stopwords,
-                            synonyms=st.session_state.synonym_groups,
-                            colormap=mg_cmap,
-                            highlight_words=mg_highlight_set,
-                            main_title="Multi-Group Wordcloud",
-                            subtitle=f"{chosen_grp}",
-                            return_freq=True
-                        )
-                        if fig_s and fig_i:
-                            mg_sub = st.tabs(["📸 Static", "🔄 Interactive", "📊 Frequencies"])
-                            with mg_sub[0]:
-                                st.pyplot(fig_s)
-                                plt.close(fig_s)
-                                add_download_buttons_wc(fig_s, None, prefix="multi_group")
-                            with mg_sub[1]:
-                                st.plotly_chart(fig_i, use_container_width=True)
-                            with mg_sub[2]:
-                                if freq_dict:
-                                    for gname, freq_data_ in freq_dict.items():
-                                        st.markdown(f"**{gname}**")
-                                        df_ = pd.DataFrame(freq_data_, columns=['Word', 'Frequency'])
-                                        st.dataframe(df_, use_container_width=True)
-                        else:
-                            st.warning("No data for multi-group wordcloud.")
-                    else:
-                        st.warning("No matching texts for the selected group values.")
-                else:
-                    st.info("Select up to 4 group values to compare.")
-            else:
-                st.warning("Pick a 'Group By' variable to use multi-group comparison.")
-
-        # 3) Side-by-Side
-        with wc_tabs[2]:
-            st.markdown("### Side-by-Side Wordcloud")
-            if chosen_grp:
-                grpvals = set()
-                for k_ in var_resps.keys():
-                    parts = k_.split('_', maxsplit=1)
-                    if len(parts) == 2:
-                        grpvals.add(parts[1])
-
-                colA, colB = st.columns(2)
-                with colA:
-                    left_cats = st.multiselect("Left side categories", sorted(grpvals), [])
-                with colB:
-                    right_cats = st.multiselect("Right side categories", sorted(grpvals), [])
-
-                if left_cats and right_cats:
-                    # Build dictionary
-                    side_dict = {}
-                    for cat_ in (left_cats + right_cats):
-                        valid_txts = []
-                        for kk, arr_ in var_resps.items():
-                            if kk.endswith(f"_{cat_}"):
-                                valid_txts.extend(arr_)
-                        if valid_txts:
-                            side_dict[cat_] = valid_txts
-
-                    # Options (no nested expanders)
-                    sb_cmap = st.selectbox("Color Map", ['viridis', 'plasma', 'inferno', 'magma', 'cividis'],
-                                           key="sidebyside_cmap")
-                    sb_high = st.text_area("Highlight words (one per line)", key="sidebyside_hw")
-                    sb_highset = {h.strip().lower() for h in sb_high.split('\n') if h.strip()}
-
-                    fig_side_s, fig_side_i, freq_side = generate_combined_comparison_wordcloud(
-                        side_dict,
-                        left_cats,
-                        right_cats,
-                        stopwords=st.session_state.custom_stopwords,
-                        synonyms=st.session_state.synonym_groups,
-                        colormap=sb_cmap,
-                        highlight_words=sb_highset,
-                        return_freq=True
-                    )
-                    if fig_side_s and fig_side_i:
-                        side_sub = st.tabs(["📸 Static", "🔄 Interactive", "📊 Frequencies"])
-                        with side_sub[0]:
-                            st.pyplot(fig_side_s)
-                            plt.close(fig_side_s)
-                            add_download_buttons_wc(fig_side_s, None, prefix="side_by_side")
-                        with side_sub[1]:
-                            st.plotly_chart(fig_side_i, use_container_width=True)
-                        with side_sub[2]:
-                            if freq_side:
-                                left_df = pd.DataFrame(freq_side['left'], columns=['Word', 'Frequency'])
-                                right_df = pd.DataFrame(freq_side['right'], columns=['Word', 'Frequency'])
-                                st.markdown("**Left Side**")
-                                st.dataframe(left_df, use_container_width=True)
-                                st.markdown("**Right Side**")
-                                st.dataframe(right_df, use_container_width=True)
-                    else:
-                        st.warning("Not enough data for side-by-side wordcloud.")
-                else:
-                    st.info("Select at least one category for left and right sides.")
-            else:
-                st.warning("Please pick a 'Group By' variable for side-by-side comparison.")
-
-        # 4) Synonym Groups
-        with wc_tabs[3]:
-            st.info("Synonym groups can be managed in the sidebar above.")
+        st.markdown(f"""
+        <div style="border: 2px solid #4CAF50; border-radius: 10px; padding: 20px; 
+                    background-color: #f8f9fa; margin: 10px 0;">
+            <div style="color: #2E7D32; font-size: 1.2em; margin-bottom: 10px; 
+                        font-weight: bold;">
+                Primary Question
+            </div>
+            <div style="color: #1a1a1a; font-size: 1.1em; line-height: 1.5; 
+                        font-weight: 600;">
+                {open_var_options.get(chosen_var, "No question text")}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        render_wordclouds(var_resps)
 
     elif st.session_state.selected_analysis == "Word Analysis":
         st.markdown("## 📊 Word Analysis")
-        st.write(f"Analyzing **{open_var_options.get(chosen_var, chosen_var)}**")
+        st.markdown(f"""
+        <div style="border: 2px solid #4CAF50; border-radius: 10px; padding: 20px; 
+                    background-color: #f8f9fa; margin: 10px 0;">
+            <div style="color: #2E7D32; font-size: 1.2em; margin-bottom: 10px; 
+                        font-weight: bold;">
+                Primary Question
+            </div>
+            <div style="color: #1a1a1a; font-size: 1.1em; line-height: 1.5; 
+                        font-weight: 600;">
+                {open_var_options.get(chosen_var, "No question text")}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
         # Each group
         from sklearn.feature_extraction.text import CountVectorizer
@@ -2402,7 +2412,19 @@ if st.session_state.file_processed and chosen_var:
 
     elif st.session_state.selected_analysis == "Topic Discovery":
         st.markdown("## 🔍 Topic Discovery")
-        st.write(f"**Variable**: {open_var_options.get(chosen_var, chosen_var)}")
+        st.markdown(f"""
+        <div style="border: 2px solid #4CAF50; border-radius: 10px; padding: 20px; 
+                    background-color: #f8f9fa; margin: 10px 0;">
+            <div style="color: #2E7D32; font-size: 1.2em; margin-bottom: 10px; 
+                        font-weight: bold;">
+                Primary Question
+            </div>
+            <div style="color: #1a1a1a; font-size: 1.1em; line-height: 1.5; 
+                        font-weight: 600;">
+                {open_var_options.get(chosen_var, "No question text")}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
         num_topics = st.slider("Number of Topics (K)", 2, 10, 4)
         min_topic_size = st.slider("Min Topic Size (unused for basic KMeans)", 2, 5, 2)
@@ -2442,95 +2464,173 @@ if st.session_state.file_processed and chosen_var:
             st.dataframe(pd.DataFrame(stats_list), use_container_width=True)
 
     elif st.session_state.selected_analysis == "Sentiment Analysis":
+
         st.markdown("## ❤️ Sentiment Analysis")
-        st.write(f"**Variable**: {open_var_options.get(chosen_var, chosen_var)}")
 
         if not chosen_grp:
+
             st.warning("Please select a 'Group By' variable for sentiment comparison.")
+
         else:
+
             analyzer = SentimentIntensityAnalyzer()
+
             results_dict = defaultdict(lambda: {'count': 0, 'pos': 0, 'neg': 0, 'neu': 0, 'scores': []})
 
             for key_, texts_ in var_resps.items():
+
                 for txt_ in texts_:
+
                     if not isinstance(txt_, str) or not txt_.strip():
                         continue
+
                     sc = analyzer.polarity_scores(txt_)
+
                     results_dict[key_]['count'] += 1
+
                     results_dict[key_]['scores'].append(sc['compound'])
+
                     if sc['compound'] >= 0.05:
+
                         results_dict[key_]['pos'] += 1
+
                     elif sc['compound'] <= -0.05:
+
                         results_dict[key_]['neg'] += 1
+
                     else:
+
                         results_dict[key_]['neu'] += 1
 
-            # Distribution
-            points_data = []
-            for gkey, stats_ in results_dict.items():
-                for val_ in stats_['scores']:
-                    points_data.append({'Group': gkey, 'Compound': val_})
+            # Build summary rows
 
-            if points_data:
-                df_vio = pd.DataFrame(points_data)
-                fig_vio = px.violin(df_vio, x='Group', y='Compound', box=True, points='all')
-                st.plotly_chart(fig_vio, use_container_width=True)
-            else:
-                st.warning("No sentiment data found.")
-
-            # Summaries
             sum_rows = []
+
             for gkey, stats_ in results_dict.items():
+
                 c_ = stats_['count']
+
                 if c_ > 0:
                     avg_c = np.mean(stats_['scores'])
+
                     p_ = (stats_['pos'] / c_) * 100
+
                     n_ = (stats_['neg'] / c_) * 100
+
                     u_ = (stats_['neu'] / c_) * 100
+
                     sum_rows.append({
+
                         'Group': gkey,
+
                         'Total': c_,
+
                         'Positive%': f"{p_:.1f}",
+
                         'Neutral%': f"{u_:.1f}",
+
                         'Negative%': f"{n_:.1f}",
+
                         'AvgCompound': f"{avg_c:.3f}"
+
                     })
-            if sum_rows:
+
+            if not sum_rows:
+
+                st.warning("No sentiment data found.")
+
+            else:
+
+                # 1) Radar Chart FIRST
+
+                radar_fig = create_sentiment_radar(sum_rows)
+
+                st.plotly_chart(radar_fig, use_container_width=True)
+
+                # 2) Violin / Distribution
+
+                points_data = []
+
+                for grp_data, stats_ in results_dict.items():
+
+                    for val_ in stats_['scores']:
+                        points_data.append({'Group': grp_data, 'Compound': val_})
+
+                if points_data:
+                    df_vio = pd.DataFrame(points_data)
+
+                    fig_vio = px.violin(df_vio, x='Group', y='Compound', box=True, points='all')
+
+                    st.plotly_chart(fig_vio, use_container_width=True)
+
+                # 3) Summaries Table
+
                 st.dataframe(pd.DataFrame(sum_rows), use_container_width=True)
 
     elif st.session_state.selected_analysis == "Theme Evolution":
+
         st.markdown("## 🌊 Theme Evolution")
         st.info("Explore how themes evolve across different groups/time. Adjust parameters below.")
 
         # Build texts_by_group
         group_texts = defaultdict(list)
         for key_, arr_ in var_resps.items():
+
             label_ = key_
+
             if chosen_grp:
+
                 parts = key_.split('_', 1)
+
                 if len(parts) == 2:
                     label_ = parts[1]
-            group_texts[label_].extend(arr_)
 
+            group_texts[label_].extend(arr_)
         if group_texts:
+
             n_th = st.slider("Number of Themes (bigrams/trigrams)", 3, 10, 5)
+
             min_fr = st.slider("Minimum frequency for each bigram/trigram", 2, 10, 3)
 
             evo_data = calculate_theme_evolution(dict(group_texts), num_themes=n_th, min_freq=min_fr)
 
             colA, colB = st.columns(2)
+
             with colA:
+
                 sankey_fig = create_theme_flow_diagram(evo_data)
+
                 if sankey_fig:
+
                     st.plotly_chart(sankey_fig, use_container_width=True)
+
                 else:
+
                     st.warning("Not enough data for the Theme Flow Diagram.")
 
             with colB:
+
                 heatmap_fig = create_theme_heatmap(evo_data)
+
                 if heatmap_fig:
+
                     st.plotly_chart(heatmap_fig, use_container_width=True)
+
                 else:
+
                     st.warning("Not enough data for the Theme Heatmap.")
+
+            # NOW add the waterfall below (or in a new column if you prefer):
+
+            waterfall_fig = create_theme_waterfall(evo_data)
+
+            if waterfall_fig:
+
+                st.plotly_chart(waterfall_fig, use_container_width=True)
+
+            else:
+
+                st.info("No suitable data for a waterfall chart.")
         else:
             st.warning("No data found for Theme Evolution.")
+
