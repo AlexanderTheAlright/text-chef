@@ -13,6 +13,7 @@ import networkx as nx
 import os
 import time
 import re
+import random
 import nltk
 from nltk.corpus import stopwords
 from collections import Counter, defaultdict
@@ -28,7 +29,10 @@ from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
+
 matplotlib.use('Agg')  # For headless environments
+px.defaults.color_continuous_scale = px.colors.sequential.Viridis # For default viridis
+px.defaults.color_discrete_sequence = px.colors.sequential.Viridis
 
 st.set_page_config(
     page_title='Text Analysis Dashboard',
@@ -444,11 +448,14 @@ def process_text(text, stopwords=None, synonym_groups=None):
 
 
 ###############################################################################
-# 6) OPEN CODING (Groups & Assignments) + SAMPLES
+# Utility functions to load & save open-coding state
 ###############################################################################
 
 def load_open_coding_groups(file='cached_groups.csv'):
-    """Load group definitions from CSV -> session_state."""
+    """
+    Load group definitions from CSV -> session_state.open_coding_groups.
+    Each entry: {"name": <group_name>, "desc": <group_description>}
+    """
     if os.path.exists(file):
         try:
             df = pd.read_csv(file)
@@ -458,35 +465,65 @@ def load_open_coding_groups(file='cached_groups.csv'):
     return []
 
 def load_open_coding_assignments(file='cached_assignments.csv'):
-    """Load text->group assignment from CSV -> session_state."""
+    """
+    Load open-coding assignments from CSV -> session_state.open_coding_assignments.
+    We'll store them keyed by (id, surveyid, variable, text) = group.
+    The CSV has columns: id, surveyid, variable, text, group
+    """
     if os.path.exists(file):
         try:
             df = pd.read_csv(file)
-            return dict(zip(df.text, df.group))
+            # Build a dictionary keyed by (id, surveyid, variable, text)
+            # e.g. {('001','surveyA','job_open','some text'): 'Group1', ...}
+            assignment_dict = {}
+            for _, row in df.iterrows():
+                # Convert row["id"] etc. to string if needed, but usually they're okay
+                key = (
+                    str(row["id"]) if not pd.isna(row["id"]) else "",
+                    str(row["surveyid"]) if not pd.isna(row["surveyid"]) else "",
+                    str(row["variable"]) if not pd.isna(row["variable"]) else "",
+                    str(row["text"]) if not pd.isna(row["text"]) else ""
+                )
+                assignment_dict[key] = row["group"]
+            return assignment_dict
         except:
             pass
     return {}
 
 def save_coding_state():
-    """Save open_coding_groups & open_coding_assignments to disk + backups."""
+    """
+    Saves the group definitions + the coded assignments to disk,
+    plus timestamped backup copies in 'coding_backups/'.
+    Ensures assigned groups remain properly linked to each unique ID+surveyid+variable+text row.
+    """
     try:
+        # 1) Save group definitions
         if st.session_state.open_coding_groups:
-            df = pd.DataFrame(st.session_state.open_coding_groups)
-            df.to_csv('cached_groups.csv', index=False)
+            df_g = pd.DataFrame(st.session_state.open_coding_groups)
+            df_g.to_csv('cached_groups.csv', index=False)
 
+        # 2) Save open-coding assignments
+        #    which are stored as dict { (id, surveyid, variable, text): group }
         if st.session_state.open_coding_assignments:
-            df2 = pd.DataFrame(
-                [{'text': k, 'group': v} for k, v in st.session_state.open_coding_assignments.items()]
-            )
-            df2.to_csv('cached_assignments.csv', index=False)
+            row_list = []
+            for (pid, psurvey, pvar, ptext), grp in st.session_state.open_coding_assignments.items():
+                row_list.append({
+                    "id": pid,
+                    "surveyid": psurvey,
+                    "variable": pvar,
+                    "text": ptext,
+                    "group": grp
+                })
+            df_a = pd.DataFrame(row_list)
+            df_a.to_csv('cached_assignments.csv', index=False)
 
-        # backups
+        # 3) Also save time-stamped backups
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         os.makedirs('coding_backups', exist_ok=True)
         if st.session_state.open_coding_groups:
-            df.to_csv(f"coding_backups/groups_{ts}.csv", index=False)
+            df_g.to_csv(f"coding_backups/groups_{ts}.csv", index=False)
         if st.session_state.open_coding_assignments:
-            df2.to_csv(f"coding_backups/assignments_{ts}.csv", index=False)
+            df_a.to_csv(f"coding_backups/assignments_{ts}.csv", index=False)
 
         st.session_state.last_save_time = time.time()
         return True
@@ -495,31 +532,50 @@ def save_coding_state():
         return False
 
 def initialize_coding_state():
-    """Ensure open coding data is loaded from disk once."""
+    """Ensure open coding data is loaded from disk exactly once."""
     if 'coding_initialized' not in st.session_state:
-        # load groups
         st.session_state.open_coding_groups = load_open_coding_groups()
-        # load assignments
         st.session_state.open_coding_assignments = load_open_coding_assignments()
         st.session_state.coding_initialized = True
 
+def auto_save_check():
+    """Placeholder for any periodic auto-save logic if desired."""
+    pass
+
+
+def initialize_coding_state():
+    """Ensure open coding data is loaded from disk exactly once."""
+    if 'coding_initialized' not in st.session_state:
+        st.session_state.open_coding_groups = load_open_coding_groups()
+        st.session_state.open_coding_assignments = load_open_coding_assignments()
+        st.session_state.coding_initialized = True
+
+    # Also ensure we have a place to store the table data by variable
+    if 'open_coding_table_data' not in st.session_state:
+        st.session_state.open_coding_table_data = {}  # dict keyed by variable -> final_df
+
 
 def render_open_coding_interface(variable,
-                                responses_dict,
-                                open_var_options,
-                                grouping_columns,
-                                group_by=None):
+                                 responses_dict,
+                                 open_var_options,
+                                 grouping_columns,
+                                 group_by=None):
     """
-    Renders a combined "Open Coding" tab that includes:
-      - managing groups
-      - a coded table (Data Editor)
-      - plus random samples to read/categorize
+    Renders an integrated "Open Coding" interface that includes:
+      - Managing groups
+      - A coded table (with stable filters)
+      - Exporting full or filtered data
+      - Random sampling & assignment
+      - Ensures all assigned groups remain attached to (id+surveyid+variable+text).
+      - Final CSV columns:
+         id, surveyid, age, gender, region, jobtitle, basevar, openvar, coded_group, group_description
     """
     initialize_coding_state()
     auto_save_check()
 
     st.markdown("## 🔎 Open Coding & Samples")
 
+    # Style for question box
     st.markdown("""
     <style>
         .question-box {
@@ -545,25 +601,28 @@ def render_open_coding_interface(variable,
     """, unsafe_allow_html=True)
 
     # Show question text
-    ov_dict = open_var_options
+    question_text = open_var_options.get(variable, "No question text")
     st.markdown(f"""
     <div class="question-box">
         <div class="question-label">Primary Question</div>
-        <div class="question-text">{ov_dict.get(variable, "No question text")}</div>
+        <div class="question-text">{question_text}</div>
     </div>
     """, unsafe_allow_html=True)
 
-    # MANAGE GROUPS
+    ###########################################################################
+    # Manage Groups
+    ###########################################################################
     st.markdown("### Manage Groups")
     with st.expander("Create/Edit Groups", expanded=False):
-        c1, c2 = st.columns([3,1])
+        c1, c2 = st.columns([3, 1])
         with c1:
             new_group_name = st.text_input("Group Name:")
             new_group_desc = st.text_input("Group Description (optional):")
             if st.button("Add / Update Group"):
                 gname = new_group_name.strip()
                 if gname:
-                    existing = next((g for g in st.session_state.open_coding_groups if g['name'] == gname), None)
+                    existing = next((g for g in st.session_state.open_coding_groups
+                                     if g['name'] == gname), None)
                     if existing:
                         existing["desc"] = new_group_desc.strip()
                         st.success(f"Updated group '{gname}'.")
@@ -576,166 +635,243 @@ def render_open_coding_interface(variable,
                     save_coding_state()
                 else:
                     st.warning("Please enter a valid group name.")
+
         with c2:
             if st.button("💾 Save Group Changes"):
-                ok = save_coding_state()
-                if ok:
+                if save_coding_state():
                     st.success("Groups saved.")
                 else:
                     st.error("Error saving groups.")
 
         # Remove group
-        del_choice = st.selectbox("Remove a Group?", ["(None)"] + [g["name"] for g in st.session_state.open_coding_groups])
+        del_choice = st.selectbox(
+            "Remove a Group?",
+            ["(None)"] + [g["name"] for g in st.session_state.open_coding_groups]
+        )
         if del_choice != "(None)":
             if st.button(f"Remove Group '{del_choice}'"):
+                # Remove from the group list
                 st.session_state.open_coding_groups = [
-                    g for g in st.session_state.open_coding_groups if g['name'] != del_choice
+                    g for g in st.session_state.open_coding_groups
+                    if g['name'] != del_choice
                 ]
-                # remove from assignments
-                for txt_key, assigned_grp in list(st.session_state.open_coding_assignments.items()):
+                # Remove from assignments
+                for k, assigned_grp in list(st.session_state.open_coding_assignments.items()):
                     if assigned_grp == del_choice:
-                        st.session_state.open_coding_assignments[txt_key] = "Unassigned"
+                        st.session_state.open_coding_assignments[k] = "Unassigned"
                 save_coding_state()
                 st.success(f"Group '{del_choice}' removed.")
 
-    # COLLECT RELEVANT DATA
-    all_dfs = []
-    for sid, df in responses_dict.items():
-        if variable in df.columns:
-            tmp = df.copy()
-            tmp['surveyid'] = sid
-            if 'province' in tmp.columns:
-                tmp['region'] = tmp['province']
-                tmp.drop('province', axis=1, inplace=True)
-            elif 'state' in tmp.columns:
-                tmp['region'] = tmp['state']
-                tmp.drop('state', axis=1, inplace=True)
-            all_dfs.append(tmp)
-    if not all_dfs:
-        st.warning("No valid data found for this variable.")
+    ###########################################################################
+    # Build or retrieve the main DataFrame for the variable in question
+    ###########################################################################
+    # If we've never built it for this variable, do it once now
+    if variable not in st.session_state.open_coding_table_data:
+        all_dfs = []
+        for sid, df in responses_dict.items():
+            if variable in df.columns:
+                tmp = df.copy()
+                tmp['surveyid'] = sid
+                # Standardize 'region' if present
+                if 'province' in tmp.columns:
+                    tmp['region'] = tmp['province']
+                    tmp.drop('province', axis=1, inplace=True)
+                elif 'state' in tmp.columns:
+                    tmp['region'] = tmp['state']
+                    tmp.drop('state', axis=1, inplace=True)
+                all_dfs.append(tmp)
+        if not all_dfs:
+            st.warning("No valid data found for this variable.")
+            return
+
+        cdf = pd.concat(all_dfs, ignore_index=True)
+
+        default_cols = ['id', 'surveyid', 'age', 'gender', 'region', 'jobtitle']
+        base_var = variable.replace('_open', '')
+        # Exclude defaults + the open var from the grouping list
+        col_candidates = [c for c in grouping_columns
+                          if c not in default_cols and c != variable and c != base_var]
+
+        # For initial build, just store the entire "unfiltered" table in session_state
+        # We'll add two extra columns: coded_group, group_description
+        # Filter out blank/NaN open responses
+        cdf = cdf.dropna(subset=[variable])
+        cdf = cdf[cdf[variable].astype(str).str.strip() != ""]
+        if base_var not in cdf.columns:
+            cdf[base_var] = None  # if missing
+        # Provide columns in a standard order
+        # We'll store all columns so that future expansions won't cause "new data" resets
+        if 'coded_group' not in cdf.columns:
+            cdf['coded_group'] = "Unassigned"
+        if 'group_description' not in cdf.columns:
+            cdf['group_description'] = ""
+
+        # Now fill coded_group, group_description from st.session_state.open_coding_assignments
+        for idx, row in cdf.iterrows():
+            pid = str(row['id']) if 'id' in row and pd.notna(row['id']) else ""
+            psurvey = str(row['surveyid']) if 'surveyid' in row and pd.notna(row['surveyid']) else ""
+            pvar = variable
+            ptext = str(row[variable]).strip()
+            dict_key = (pid, psurvey, pvar, ptext)
+            assigned_grp = st.session_state.open_coding_assignments.get(dict_key, "Unassigned")
+            cdf.at[idx, 'coded_group'] = assigned_grp
+            if assigned_grp != "Unassigned":
+                gobj = next((g for g in st.session_state.open_coding_groups
+                             if g['name'] == assigned_grp), None)
+                if gobj:
+                    cdf.at[idx, 'group_description'] = gobj.get("desc", "")
+
+        # Store in session_state
+        st.session_state.open_coding_table_data[variable] = cdf
+
+    # Now we always refer to the same DataFrame object
+    final_df = st.session_state.open_coding_table_data[variable]
+
+    # Re-check if it's empty
+    if final_df.empty:
+        st.warning("No valid data rows for this variable.")
         return
 
-    cdf = pd.concat(all_dfs, ignore_index=True)
-
-    # Identify default columns
-    default_cols = ['id','age','jobtitle']
-    if 'region' in cdf.columns:
-        default_cols.append('region')
-    def_cols_present = [c for c in default_cols if c in cdf.columns]
-
-    # Also see if variable has a base var
-    base_var = variable.replace('_open','')
-
-    # Let user pick additional columns
-    grouping_cols = [g for g in grouping_columns if g not in def_cols_present]
+    # Data selection UI for columns
     st.markdown("### Data Selection")
+    default_cols = ['id', 'surveyid', 'age', 'gender', 'region', 'jobtitle']
+    base_var = variable.replace('_open', '')
+    col_candidates = [c for c in grouping_columns
+                      if c not in default_cols and c != variable and c != base_var]
+
     user_cols = st.multiselect(
         "Pick additional columns to display:",
-        options=grouping_cols,
+        options=col_candidates,
         default=[]
     )
 
-    used_cols = def_cols_present[:]
-    used_cols.extend(user_cols)
-    if base_var in cdf.columns and base_var not in used_cols:
+    # We build a final column set:
+    used_cols = []
+    for col in default_cols:
+        if col in final_df.columns and col not in used_cols:
+            used_cols.append(col)
+    if base_var in final_df.columns and base_var not in used_cols:
         used_cols.append(base_var)
-    used_cols.append(variable)
-    used_cols.append('surveyid')
-    used_cols = list(dict.fromkeys(used_cols))  # remove duplicates if any
+    used_cols.extend(user_cols)
+    if variable not in used_cols:
+        used_cols.append(variable)
+    # We always want coded_group, group_description at the end
+    if 'coded_group' not in used_cols:
+        used_cols.append('coded_group')
+    if 'group_description' not in used_cols:
+        used_cols.append('group_description')
 
-    # Ensure 'surveyid' is right after 'id' if both exist
-    if 'id' in used_cols and 'surveyid' in used_cols:
-        used_cols.remove('surveyid')
-        idx_ = used_cols.index('id')
-        used_cols.insert(idx_+1, 'surveyid')
+    # De-duplicate while preserving order
+    used_cols = list(dict.fromkeys(used_cols))
 
-    # Build the final table
+    # Filter UI
     show_table_expander = st.expander("🔎 View & Edit Full Table", expanded=False)
     with show_table_expander:
-        temp_data = cdf[used_cols].copy()
-        temp_data = temp_data.dropna(subset=[variable])
-        temp_data = temp_data[temp_data[variable].astype(str).str.strip() != ""]
-
-        # Filter
-        st.markdown("**Global Search/Filter**")
-        gl_search = st.text_input("Search across all columns:")
-        show_col_filters = st.checkbox("Show column-based filters", False)
+        # Build filter inputs
+        gl_search = st.text_input(
+            "Global Search/Filter:",
+            value=st.session_state.get("oc_global_search", ""),
+            key="oc_global_search"
+        )
+        show_col_filters = st.checkbox(
+            "Show column-based filters",
+            value=st.session_state.get("oc_show_col_filters", False),
+            key="oc_show_col_filters"
+        )
         col_filters = {}
         if show_col_filters:
-            st.write("Enter text to filter each column:")
+            st.write("Column filters (case-insensitive substring match):")
             columns_per_row = 3
             fil_cols = st.columns(columns_per_row)
             for i, c in enumerate(used_cols):
+                filter_key = f"oc_filter_{c}"
+                default_val = st.session_state.get(filter_key, "")
                 with fil_cols[i % columns_per_row]:
-                    col_filters[c] = st.text_input(f"Filter {c}", "")
+                    col_filters[c] = st.text_input(f"Filter {c}", default_val, key=filter_key)
 
-        # apply
-        df_for_edit = temp_data.copy()
+        # Apply filters to a *copy* of final_df
+        df_for_editor = final_df[used_cols].copy()
 
+        # 1) Global filter
         if gl_search.strip():
-            # do a global OR search across columns
-            mask = pd.Series(False, index=df_for_edit.index)
-            for c in df_for_edit.columns:
-                mask |= df_for_edit[c].astype(str).str.contains(gl_search, case=False, na=False)
-            df_for_edit = df_for_edit[mask]
+            mask = pd.Series(False, index=df_for_editor.index)
+            for col_ in df_for_editor.columns:
+                mask |= df_for_editor[col_].astype(str).str.contains(gl_search, case=False, na=False)
+            df_for_editor = df_for_editor[mask]
 
+        # 2) Column filters
         if show_col_filters:
             for c, val in col_filters.items():
                 if val.strip():
-                    df_for_edit = df_for_edit[df_for_edit[c].astype(str).str.contains(val, case=False, na=False)]
+                    df_for_editor = df_for_editor[
+                        df_for_editor[c].astype(str).str.contains(val, case=False, na=False)
+                    ]
 
-        # Build a data dict for st.data_editor
-        rows_data = []
-        for idx, row in df_for_edit.iterrows():
-            resp_text = row[variable]
-            assigned_grp = st.session_state.open_coding_assignments.get(resp_text, "Unassigned")
-            grp_desc = ""
-            if assigned_grp != "Unassigned":
-                gobj = next((g for g in st.session_state.open_coding_groups if g['name'] == assigned_grp), None)
-                if gobj:
-                    grp_desc = gobj.get("desc","")
-
-            new_row = {c: row[c] for c in df_for_edit.columns}
-            new_row['coded_group'] = assigned_grp
-            new_row['group_desc'] = grp_desc
-            rows_data.append(new_row)
-
-        final_df = pd.DataFrame(rows_data)
-
-        # Build config for columns
+        # Build column_config for data_editor
         colconf = {}
         colconf['coded_group'] = st.column_config.SelectboxColumn(
             "Coded Group",
             options=["Unassigned"] + [g["name"] for g in st.session_state.open_coding_groups],
             help="Pick group from dropdown"
         )
-        colconf['group_desc'] = st.column_config.TextColumn(
+        colconf['group_description'] = st.column_config.TextColumn(
             "Group Description",
             disabled=True
         )
-        for c in final_df.columns:
-            if c not in ['coded_group','group_desc']:
-                colconf[c] = st.column_config.TextColumn(c, disabled=(c != variable))
+        for c in df_for_editor.columns:
+            if c not in ['coded_group', 'group_description']:
+                colconf[c] = st.column_config.TextColumn(c, disabled=True)
 
-        edited = st.data_editor(
-            final_df,
+        # Define a callback that updates st.session_state.open_coding_assignments
+        def update_coded_assignments():
+            # st.session_state["open_coding_data_editor"] is the *new* df
+            updated_df = st.session_state["open_coding_data_editor"]
+            # We'll match up rows by (id, surveyid, variable, text)
+            for i, row_i in updated_df.iterrows():
+                pid = str(row_i['id']) if 'id' in row_i and pd.notna(row_i['id']) else ""
+                psurvey = str(row_i['surveyid']) if 'surveyid' in row_i and pd.notna(row_i['surveyid']) else ""
+                pvar = variable
+                ptext = str(row_i[variable]).strip()
+                dict_key = (pid, psurvey, pvar, ptext)
+                new_grp = row_i['coded_group']
+
+                st.session_state.open_coding_assignments[dict_key] = new_grp
+
+            # Also keep final_df in sync so we do not appear to have "new" data
+            # We'll align by index since updated_df is the same shape as df_for_editor
+            # But we only update those rows that are currently *visible* in df_for_editor
+            # (All other rows remain unchanged.)
+            for idx_ in df_for_editor.index:
+                if idx_ in updated_df.index:
+                    new_grp_val = updated_df.at[idx_, 'coded_group']
+                    new_desc = ""
+                    if new_grp_val != "Unassigned":
+                        # find the group
+                        gobj_ = next((g for g in st.session_state.open_coding_groups
+                                      if g['name'] == new_grp_val), None)
+                        if gobj_:
+                            new_desc = gobj_.get("desc", "")
+                    final_df.at[idx_, 'coded_group'] = new_grp_val
+                    final_df.at[idx_, 'group_description'] = new_desc
+
+        edited_df = st.data_editor(
+            df_for_editor,
             column_config=colconf,
             hide_index=True,
             use_container_width=True,
-            key="open_coding_data_editor"
+            key="open_coding_data_editor",
+            on_change=update_coded_assignments
         )
 
-        # sync changes back
-        for i in edited.index:
-            rtxt = edited.loc[i, variable]
-            cgrp = edited.loc[i, 'coded_group']
-            st.session_state.open_coding_assignments[rtxt] = cgrp
-
+        #######################################################################
+        # EXPORTS
+        #######################################################################
         st.markdown("#### Export")
-        c1, c2 = st.columns(2)
-        with c1:
-            # current view
-            cur_csv = edited.to_csv(index=False).encode('utf-8')
+        c_exp1, c_exp2, c_exp3 = st.columns(3)
+
+        # 1) Download current view (just what's in 'edited_df')
+        with c_exp1:
+            cur_csv = edited_df.to_csv(index=False).encode('utf-8')
             st.download_button(
                 label="💾 Download Current View CSV",
                 data=cur_csv,
@@ -743,24 +879,39 @@ def render_open_coding_interface(variable,
                 mime='text/csv',
                 use_container_width=True
             )
-        with c2:
-            # entire dataset with coding
-            all_rows = []
-            for idx0, row0 in temp_data.iterrows():
-                rt0 = row0[variable]
-                assigned_grp0 = st.session_state.open_coding_assignments.get(rt0, "Unassigned")
-                grp_desc0 = ""
-                if assigned_grp0 != "Unassigned":
-                    gobj0 = next((g for g in st.session_state.open_coding_groups if g["name"] == assigned_grp0), None)
-                    if gobj0: grp_desc0 = gobj0.get("desc","")
 
-                base_ = {c: row0[c] for c in temp_data.columns}
-                base_["coded_group"] = assigned_grp0
-                base_["group_desc"] = grp_desc0
-                all_rows.append(base_)
-            full_df = pd.DataFrame(all_rows)
+        # 2) Download entire dataset with coding (all rows in final_df)
+        with c_exp2:
+            base_var = variable.replace('_open', '')
+            # We'll construct the final "spreadsheet" structure
+            row_list = []
+            for idx0, row0 in final_df.iterrows():
+                pid = str(row0['id']) if 'id' in row0 and pd.notna(row0['id']) else ""
+                psurvey = str(row0['surveyid']) if 'surveyid' in row0 and pd.notna(row0['surveyid']) else ""
+                ptext = str(row0[variable]).strip()
+                assigned_grp0 = row0['coded_group']
+                grp_desc0 = row0['group_description']
+                row_list.append({
+                    "id": pid,
+                    "surveyid": psurvey,
+                    "age": row0["age"] if "age" in row0 else None,
+                    "gender": row0["gender"] if "gender" in row0 else None,
+                    "region": row0["region"] if "region" in row0 else None,
+                    "jobtitle": row0["jobtitle"] if "jobtitle" in row0 else None,
+                    "basevar": base_var,
+                    "openvar": ptext,
+                    "coded_group": assigned_grp0,
+                    "group_description": grp_desc0
+                })
+            full_df = pd.DataFrame(row_list)
+            col_order = ["id", "surveyid", "age", "gender", "region", "jobtitle", "basevar", "openvar", "coded_group",
+                         "group_description"]
+            for cc in col_order:
+                if cc not in full_df.columns:
+                    full_df[cc] = None
+            full_df = full_df[col_order]
+
             full_csv = full_df.to_csv(index=False).encode('utf-8')
-
             st.download_button(
                 label="📥 Download Complete Dataset",
                 data=full_csv,
@@ -769,49 +920,73 @@ def render_open_coding_interface(variable,
                 use_container_width=True
             )
 
-    # RENDER SAMPLES
+        # 3) Export only selected group(s)
+        with c_exp3:
+            group_list = ["Unassigned"] + [g["name"] for g in st.session_state.open_coding_groups]
+            export_groups = st.multiselect("Select group(s) to export:", group_list, default=[])
+            if st.button("Export Selected Group(s)"):
+                if export_groups:
+                    sub_df = full_df[full_df["coded_group"].isin(export_groups)]
+                else:
+                    sub_df = full_df
+                sub_csv = sub_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="Download Selected Groups",
+                    data=sub_csv,
+                    file_name=f"selected_groups_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime='text/csv'
+                )
+
+    ###########################################################################
+    # Random Samples
+    ###########################################################################
     st.markdown("---")
     st.markdown("### Random Samples for Review")
 
     def build_samples_dict():
-        out = {"All":[]}
-        for df in responses_dict.values():
+        """Gather random samples from responses_dict for the chosen variable."""
+        out = {"All": []}
+        for sid, df in responses_dict.items():
             if variable in df.columns:
                 for _, row in df.iterrows():
                     val = row[variable]
                     if pd.notna(val) and str(val).strip():
                         out["All"].append({
-                            "text": str(val).strip(),
                             "id": row["id"] if "id" in row else None,
+                            "surveyid": sid,
+                            "text": str(val).strip(),
                             "age": row["age"] if "age" in row else None,
+                            "gender": row["gender"] if "gender" in row else None,
                             "jobtitle": row["jobtitle"] if "jobtitle" in row else None,
-                            "province": row["region"] if "region" in row else None
+                            "region": row["region"] if "region" in row else None
                         })
         return out
 
     samples_dict = build_samples_dict()
 
-    # If user selected a valid group_by, let's also gather samples that way
-    if group_by and group_by not in [None,'None']:
+    # If user has a group_by column, gather samples by that column too
+    if group_by and group_by not in [None, 'None']:
         for sid, df in responses_dict.items():
             if group_by in df.columns and variable in df.columns:
                 for gval in df[group_by].dropna().unique():
                     cat_str = str(gval)
-                    sub_ = df[(df[group_by]==gval) & df[variable].notna()]
+                    sub_ = df[(df[group_by] == gval) & df[variable].notna()]
                     for _, row in sub_.iterrows():
                         vt = str(row[variable]).strip()
                         if vt:
                             if cat_str not in samples_dict:
                                 samples_dict[cat_str] = []
                             samples_dict[cat_str].append({
-                                "text": vt,
                                 "id": row["id"] if "id" in row else None,
+                                "surveyid": sid,
+                                "text": vt,
                                 "age": row["age"] if "age" in row else None,
+                                "gender": row["gender"] if "gender" in row else None,
                                 "jobtitle": row["jobtitle"] if "jobtitle" in row else None,
-                                "province": row["region"] if "region" in row else None
+                                "region": row["region"] if "region" in row else None
                             })
 
-    # De-duplicate
+    # De-duplicate repeated text in each category
     for cat_k, items in samples_dict.items():
         seen_txt = set()
         newlist = []
@@ -824,7 +999,6 @@ def render_open_coding_interface(variable,
     num_samp = st.slider("Number of samples per group", min_value=1, max_value=20, value=5)
     if st.button("🔀 Shuffle Samples"):
         st.session_state["sample_seed"] = int(time.time())
-    import random
     random.seed(st.session_state.get("sample_seed", 1234))
 
     for cat, arr in samples_dict.items():
@@ -832,21 +1006,27 @@ def render_open_coding_interface(variable,
         if not arr:
             st.write("No data in this category.")
             continue
-        # random sample
         sub_samp = random.sample(arr, min(num_samp, len(arr)))
         for i, obj in enumerate(sub_samp, 1):
             with st.expander(f"[{cat}] Sample #{i}", expanded=False):
                 meta_parts = []
                 if obj["id"]: meta_parts.append(f"ID: {obj['id']}")
                 if obj["age"]: meta_parts.append(f"Age: {obj['age']}")
+                if obj["gender"]: meta_parts.append(f"Gender: {obj['gender']}")
                 if obj["jobtitle"]: meta_parts.append(f"Job: {obj['jobtitle']}")
-                if obj["province"]: meta_parts.append(f"Region: {obj['province']}")
+                if obj["region"]: meta_parts.append(f"Region: {obj['region']}")
                 if meta_parts:
                     st.markdown("*" + " | ".join(meta_parts) + "*")
 
                 st.write(obj["text"])
-                # Let user assign to a group
-                assigned_grp_ = st.session_state.open_coding_assignments.get(obj["text"], "Unassigned")
+
+                # Let user assign to a group:
+                pid = str(obj['id']) if obj['id'] else ""
+                psurvey = str(obj["surveyid"]) if obj["surveyid"] else ""
+                pvar = variable
+                ptext = obj["text"]
+                dict_key = (pid, psurvey, pvar, ptext)
+                assigned_grp_ = st.session_state.open_coding_assignments.get(dict_key, "Unassigned")
                 grp_list = ["Unassigned"] + [g["name"] for g in st.session_state.open_coding_groups]
                 new_sel = st.selectbox(
                     "Assign to group:",
@@ -854,14 +1034,14 @@ def render_open_coding_interface(variable,
                     index=(grp_list.index(assigned_grp_) if assigned_grp_ in grp_list else 0),
                     key=f"sample_{cat}_{i}"
                 )
-                st.session_state.open_coding_assignments[obj["text"]] = new_sel
+                st.session_state.open_coding_assignments[dict_key] = new_sel
 
     if st.button("💾 Save All Coding"):
-        ok = save_coding_state()
-        if ok:
+        if save_coding_state():
             st.success("Coding saved successfully.")
         else:
             st.error("Error saving coding.")
+
 
 ################################################################################
 # WORDCLOUD FUNCTIONS
@@ -2402,7 +2582,9 @@ if st.session_state.file_processed and chosen_var:
                 st.dataframe(pair_df, use_container_width=True)
 
     elif st.session_state.selected_analysis == "Topic Discovery":
+
         st.markdown("## 🔍 Topic Discovery")
+
         st.markdown(f"""
         <div style="border: 2px solid #4CAF50; border-radius: 10px; padding: 20px; 
                     background-color: #f8f9fa; margin: 10px 0;">
@@ -2417,12 +2599,93 @@ if st.session_state.file_processed and chosen_var:
         </div>
         """, unsafe_allow_html=True)
 
+        # ------------------------------------------------------------
+
+        # FIRST: 3D Topic Visualization
+
+        # ------------------------------------------------------------
+
+        st.subheader("3D Topic Visualization")
+
+        # Combine all responses for the chosen variable into a single DataFrame
+
+        combined_rows = []
+
+        for sid, dfx in rdict.items():
+
+            if chosen_var in dfx.columns:
+
+                sub_df = dfx[[chosen_var]].copy()
+
+                sub_df["surveyid"] = sid
+
+                # If user has columns like id, age, etc., include them if they exist:
+
+                for extra_col in ["id", "age", "gender", "region", "jobtitle"]:
+
+                    if extra_col in dfx.columns:
+                        sub_df[extra_col] = dfx[extra_col]
+
+                # Filter out NaNs
+
+                sub_df.dropna(subset=[chosen_var], inplace=True)
+
+                sub_df = sub_df[sub_df[chosen_var].astype(str).str.strip() != ""]
+
+                combined_rows.append(sub_df)
+
+        if combined_rows:
+
+            big_df_3d = pd.concat(combined_rows, ignore_index=True)
+
+            big_df_3d.rename(columns={chosen_var: "open_response"}, inplace=True)
+
+            fig_3d = create_3d_topic_visualization(
+
+                df=big_df_3d,
+
+                text_col="open_response",
+
+                jobtitle_col="jobtitle",
+
+                age_col="age",
+
+                gender_col="gender",
+
+                region_col="region",
+
+                model_name='all-MiniLM-L6-v2',
+
+                n_components=3,
+
+                n_clusters=5,
+
+                random_state=42
+
+            )
+
+            if fig_3d is not None:
+
+                st.plotly_chart(fig_3d, use_container_width=True)
+
+            else:
+
+                st.warning("Not enough valid text data for 3D topic visualization.")
+
+        else:
+
+            st.warning("No valid responses to display in 3D topic visualization.")
+
+        # ------------------------------------------------------------
+        # SECOND: Simple K-Means or other clustering overview
+        # ------------------------------------------------------------
+        st.subheader("Topic Clusters Overview")
         num_topics = st.slider("Number of Topics (K)", 2, 10, 4)
         min_topic_size = st.slider("Min Topic Size (unused for basic KMeans)", 2, 5, 2)
 
         emb_model = SentenceTransformer('all-MiniLM-L6-v2')
-        for key_, arr_ in var_resps.items():
-            st.subheader(f"{key_} ({len(arr_)} responses)")
+        for group_name, arr_ in var_resps.items():
+            st.markdown(f"### {group_name} ({len(arr_)} responses)")
             cleaned_txts = [tx for tx in arr_ if isinstance(tx, str) and tx.strip()]
             if len(cleaned_txts) < 20:
                 st.warning("Not enough data (<20) to do topic modeling.")
