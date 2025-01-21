@@ -10,6 +10,7 @@ vaderSentiment
 networkx
 openpyxl
 xlrd
+ntlk
 xlsxwriter
 python-dateutil
 sentence-transformers
