@@ -1103,8 +1103,6 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
         samples_dict[cat_k] = newlist
 
     num_samp = st.slider("Number of samples per group", 1, 20, 5)
-    if st.button("🔀 Shuffle Samples"):
-        st.session_state["sample_seed"] = int(time.time())
     random.seed(st.session_state.get("sample_seed", 1234))
 
     for cat, arr in samples_dict.items():
@@ -1146,9 +1144,13 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
                 )
                 st.session_state.open_coding_assignments[dict_key] = new_sel
 
-    if st.button("💾 Save All Coding"):
+    # SINGLE button that both saves changes and reshuffles:
+    if st.button("🎲 Save and Shuffle"):
         if update_coded_assignments(variable, df_updated, final_df):
-            st.success("All coding saved successfully.")
+            # Change the seed so next run we see fresh random samples
+            st.session_state["sample_seed"] = int(time.time())
+            st.success("All coding saved. New random samples selected.")
+            st.experimental_rerun()
         else:
             st.error("Error saving coding.")
 
