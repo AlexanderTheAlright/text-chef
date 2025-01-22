@@ -678,52 +678,46 @@ def initialize_coding_state():
     if 'open_coding_table_data' not in st.session_state:
         st.session_state.open_coding_table_data = {}  # dict {var -> final_df}
 
-def update_coded_assignments(variable, df_updated, final_df):
+def update_coded_assignments(variable, final_df, df_updated=None):
     """
-    Called after user clicks Save button or Save-and-Shuffle button.
-    We push changes from df_updated into st.session_state, then save to disk.
+    1) If `df_updated` is provided (from st.data_editor), merge those changes into
+       st.session_state.open_coding_assignments.
+    2) Then, for each row in `final_df`, set coded_group from st.session_state.open_coding_assignments.
+    3) Save to disk.
     Returns True on success, False on error.
     """
-    if df_updated.empty:
-        # No data in the updated table. We can either skip or set a message.
-        st.warning("No data in the updated table. Nothing to save.")
-        return True  # or return False; up to you, but let's say True
 
-    # 1) Update the assignments dictionary
-    for i, row in df_updated.iterrows():
-        row_id = str(row.get("id", ""))
-        new_grp = row.get("coded_group", "Unassigned")
-        dict_key = (row_id, variable)
-        st.session_state.open_coding_assignments[dict_key] = new_grp
+    # (A) Merge changes from df_updated if present
+    if df_updated is not None and not df_updated.empty:
+        for i, row in df_updated.iterrows():
+            row_id = str(row.get("id", ""))
+            new_grp = row.get("coded_group", "Unassigned")
+            dict_key = (row_id, variable)
+            st.session_state.open_coding_assignments[dict_key] = new_grp
 
-    # 2) Reflect changes back in final_df
-    for idx_ in final_df.index:
-        row_ = final_df.loc[idx_]
-        row_id_ = str(row_.get("id", ""))
-        dict_key = (row_id_, variable)
-        assigned = st.session_state.open_coding_assignments.get(dict_key, "Unassigned")
-        final_df.at[idx_, "coded_group"] = assigned
+    # (B) Now reflect session_state assignments back into final_df
+    if not final_df.empty:
+        for idx_ in final_df.index:
+            row_ = final_df.loc[idx_]
+            row_id_ = str(row_.get("id", ""))
+            dict_key = (row_id_, variable)
+            assigned = st.session_state.open_coding_assignments.get(dict_key, "Unassigned")
+            final_df.at[idx_, "coded_group"] = assigned
 
-        if assigned != "Unassigned":
-            gobj = next((g for g in st.session_state.open_coding_groups
-                         if g["name"] == assigned),
-                        None)
-            final_df.at[idx_, "group_description"] = (gobj["desc"] if gobj else "")
-        else:
-            final_df.at[idx_, "group_description"] = ""
+            if assigned != "Unassigned":
+                gobj = next((g for g in st.session_state.open_coding_groups
+                            if g["name"] == assigned), None)
+                final_df.at[idx_, "group_description"] = gobj["desc"] if gobj else ""
+            else:
+                final_df.at[idx_, "group_description"] = ""
 
-    # 3) Actually save
+    # (C) Finally, save to disk
     try:
-        saved = save_coding_state()
-        if saved:
-            # Just return True. We won't print success here, to avoid double messages
-            return True
-        else:
-            return False
+        saved = save_coding_state()  # your existing function
+        return bool(saved)
     except Exception as e:
         st.error(f"Error saving coding: {e}")
         return False
-
         
 def render_open_coding_interface(variable, responses_dict, open_var_options, grouping_columns):
     initialize_coding_state()
@@ -998,82 +992,11 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
 
     # =================== SAVE CHANGES BUTTON ===================
     if st.button("💾 Save Changes"):
-        ok = update_coded_assignments(variable, df_updated, final_df)
+        ok = update_coded_assignments(variable, final_df, df_updated=df_updated)
         if ok:
-            st.success("All coding saved.")
-
-        # ============== OPTIONAL EXPORTS ==============
-        st.markdown("#### 📤 Export")
-        c_exp1, c_exp2, c_exp3 = st.columns(3)
-
-        # 1) Download current view
-        with c_exp1:
-            cur_csv = df_updated.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="💾 Download Current View CSV",
-                data=cur_csv,
-                file_name=f"coded_data_view_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime='text/csv',
-                use_container_width=True
-            )
-
-        # 2) Download entire dataset with coding
-        with c_exp2:
-            base_var = variable.replace('_open', '')
-            row_list = []
-            for idx0, row0 in final_df.iterrows():
-                id = str(row0.get('id', '')) or str(row0.get('id', ''))
-                psurvey = str(row0.get('surveyid', ''))
-                ptext = str(row0[variable]).strip()
-                assigned_grp0 = row0['coded_group']
-                grp_desc0 = row0['group_description']
-                row_list.append({
-                    "id": id,
-                    "surveyid": psurvey,
-                    "age": row0.get("age"),
-                    "gender": row0.get("gender"),
-                    "region": row0.get("region"),
-                    "jobtitle": row0.get("jobtitle"),
-                    "basevar": base_var,
-                    "openvar": ptext,
-                    "coded_group": assigned_grp0,
-                    "group_description": grp_desc0
-                })
-            full_df = pd.DataFrame(row_list)
-            col_order = [
-                "id", "surveyid", "age", "gender", "region",
-                "jobtitle", "basevar", "openvar",
-                "coded_group", "group_description"
-            ]
-            for cc in col_order:
-                if cc not in full_df.columns:
-                    full_df[cc] = None
-            full_df = full_df[col_order]
-
-            full_csv = full_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Download Complete Dataset",
-                data=full_csv,
-                file_name=f"complete_coded_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime='text/csv',
-                use_container_width=True
-            )
-
-        # 3) Export only selected group(s)
-        with c_exp3:
-            export_groups = st.multiselect("Select group(s) to export:", group_names, default=[])
-            if st.button("📤 Export Selected Group(s)"):
-                if export_groups:
-                    sub_df = full_df[full_df["coded_group"].isin(export_groups)]
-                else:
-                    sub_df = full_df
-                sub_csv = sub_df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="Download Selected Groups",
-                    data=sub_csv,
-                    file_name=f"selected_groups_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv"
-                )
+            st.success("All coding saved successfully.")
+        else:
+            st.error("Error saving coding.")
 
     # ============== RANDOM SAMPLES (optional) ==============
     st.markdown("---")
@@ -1153,11 +1076,11 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
 
     # SINGLE button that both saves changes and reshuffles:
     if st.button("🎲 Save and Shuffle"):
-        ok = update_coded_assignments(variable, df_updated, final_df)
+        ok = update_coded_assignments(variable, final_df, df_updated=None)
         if ok:
             st.session_state["sample_seed"] = int(time.time())
             st.success("All coding saved. Shuffled a new set of samples.")
-            st.rerun()
+            st.experimental_rerun()
         else:
             st.error("Error saving coding.")
 
