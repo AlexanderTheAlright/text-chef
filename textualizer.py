@@ -887,7 +887,7 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
                     # Save & re-run
                     if save_coding_state():
                         st.success(f"Merged {groups_to_merge} into '{merged_group_name.strip()}' successfully.")
-                        st.experimental_rerun()
+                        st.rerun()
                     else:
                         st.error("Error saving after merging groups.")
 
