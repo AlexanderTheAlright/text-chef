@@ -1114,7 +1114,7 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
             continue
         sub_samp = random.sample(arr, min(num_samp, len(arr)))
         for i, obj in enumerate(sub_samp, 1):
-            with st.expander(f"[{cat}] Sample #{i}", expanded=False):
+            with st.expander(f"[{cat}] Sample #{i}", expanded=True):
                 meta_parts = []
                 if obj["id"]:
                     meta_parts.append(f"ID: {obj['id']}")
