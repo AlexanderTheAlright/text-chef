@@ -842,7 +842,7 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
                         st.session_state.open_coding_assignments[k] = "Unassigned"
                 save_coding_state()
                 st.success(f"Removed group '{delete_choice}'")
-                st.experimental_rerun()
+                st.rerun()
 
         # ----------------------------------
         # COMBINE GROUPS
