@@ -1328,8 +1328,6 @@ def render_wordclouds(var_resps, var_name="open_var"):
             else:
                 ax_.text(0.5, 0.5, "No data", ha='center', va='center', fontsize=14)
 
-            # Remove quadrant label from the subplot if you don't want it:
-            # ax_.set_title(quad_label, fontsize=16)
             idx += 1
 
         st.pyplot(fig)
@@ -1343,7 +1341,8 @@ def render_wordclouds(var_resps, var_name="open_var"):
             data=buf.getvalue(),
             file_name=f"{var_name}_wordcloud_quadrants_static.png",
             mime="image/png",
-            use_container_width=True
+            use_container_width=True,
+            key="static_png_download"
         )
         plt.close(fig)
 
@@ -1353,7 +1352,8 @@ def render_wordclouds(var_resps, var_name="open_var"):
             data=csv_all_freq,
             file_name=f"{var_name}_wordcloud_quadrants_frequencies.csv",
             mime="text/csv",
-            use_container_width=True
+            use_container_width=True,
+            key="static_csv_download"
         )
 
     ###############################################################################
@@ -1403,7 +1403,8 @@ def render_wordclouds(var_resps, var_name="open_var"):
                 data=buf_i.getvalue(),
                 file_name=f"{var_name}_interactive_wordcloud_quadrants.png",
                 mime="image/png",
-                use_container_width=True
+                use_container_width=True,
+                key="interactive_png_download"
             )
         except Exception as e:
             st.warning("Plotly image export requires 'kaleido'. Please install it if you need PNG download.")
@@ -1414,7 +1415,8 @@ def render_wordclouds(var_resps, var_name="open_var"):
             data=csv_all_freq,
             file_name=f"{var_name}_wordcloud_quadrants_frequencies.csv",
             mime="text/csv",
-            use_container_width=True
+            use_container_width=True,
+            key="interactive_csv_download"
         )
 
 
