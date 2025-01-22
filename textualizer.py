@@ -789,9 +789,10 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
         st.info("No coded groups yet.")
 
     # =================== GROUP MANAGEMENT UI ===================
-    st.markdown("---")
-    st.subheader("🗂️ Manage Groups")
     with st.container():
+        # ----------------------------------
+        # ADD / UPDATE GROUP
+        # ----------------------------------
         c1, c2 = st.columns([3, 1])
         with c1:
             new_group_name = st.text_input("Group Name:")
@@ -799,7 +800,8 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
             if st.button("➕ Add / Update Group"):
                 gname = new_group_name.strip()
                 if gname:
-                    existing = next((g for g in st.session_state.open_coding_groups if g['name'] == gname), None)
+                    existing = next((g for g in st.session_state.open_coding_groups
+                                     if g['name'] == gname), None)
                     if existing:
                         existing["desc"] = new_group_desc.strip()
                         st.success(f"Updated group '{gname}'.")
@@ -812,6 +814,7 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
                     save_coding_state()
                 else:
                     st.warning("Please enter a valid group name.")
+
         with c2:
             if st.button("💾 Save Groups"):
                 if save_coding_state():
@@ -819,7 +822,9 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
                 else:
                     st.error("Error saving groups.")
 
-        # Remove a group
+        # ----------------------------------
+        # REMOVE A GROUP
+        # ----------------------------------
         delete_choice = st.selectbox(
             "❌ Remove a group?",
             ["(None)"] + [g["name"] for g in st.session_state.open_coding_groups]
@@ -828,7 +833,8 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
             if st.button(f"🗑️ Remove Group '{delete_choice}'"):
                 # Remove from group list
                 st.session_state.open_coding_groups = [
-                    g for g in st.session_state.open_coding_groups if g["name"] != delete_choice
+                    g for g in st.session_state.open_coding_groups
+                    if g["name"] != delete_choice
                 ]
                 # Unassign any references in existing coded assignments
                 for k, v in list(st.session_state.open_coding_assignments.items()):
@@ -837,6 +843,53 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
                 save_coding_state()
                 st.success(f"Removed group '{delete_choice}'")
                 st.experimental_rerun()
+
+        # ----------------------------------
+        # COMBINE GROUPS
+        # ----------------------------------
+        with st.expander("Combine Groups", expanded=False):
+            # 1) Let the user pick groups to merge
+            all_group_names = [g["name"] for g in st.session_state.open_coding_groups]
+            groups_to_merge = st.multiselect(
+                "Select two or more groups to combine",
+                all_group_names
+            )
+
+            # 2) New group name/desc
+            merged_group_name = st.text_input("New Merged Group Name (for the new group)")
+            merged_group_desc = st.text_input("Merged Group Description")
+
+            # 3) Button to trigger merge
+            if st.button("Combine & Save"):
+                # Basic validations
+                if len(groups_to_merge) < 2:
+                    st.warning("Please select at least two groups to combine.")
+                elif not merged_group_name.strip():
+                    st.warning("Please provide a valid name for the new group.")
+                else:
+                    # Replace old groups in assignments
+                    for (some_id, some_var), old_grp in list(st.session_state.open_coding_assignments.items()):
+                        if old_grp in groups_to_merge:
+                            st.session_state.open_coding_assignments[(some_id, some_var)] = merged_group_name.strip()
+
+                    # Remove old groups from session_state
+                    st.session_state.open_coding_groups = [
+                        g for g in st.session_state.open_coding_groups
+                        if g["name"] not in groups_to_merge
+                    ]
+
+                    # Add the new merged group
+                    st.session_state.open_coding_groups.append({
+                        "name": merged_group_name.strip(),
+                        "desc": merged_group_desc.strip()
+                    })
+
+                    # Save & re-run
+                    if save_coding_state():
+                        st.success(f"Merged {groups_to_merge} into '{merged_group_name.strip()}' successfully.")
+                        st.experimental_rerun()
+                    else:
+                        st.error("Error saving after merging groups.")
 
     # =================== FILTERING & TABLE EDITOR ===================
     st.markdown("---")
