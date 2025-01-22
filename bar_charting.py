@@ -281,8 +281,8 @@ if __name__ == "__main__":
     import os
 
     current_dir = os.getcwd()
-    qwels_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_dir)))))
-    data_path = os.path.join(qwels_path, "ANALYSIS", "DATASETS")
+    qwels_path = os.path.dirname(os.path.dirname(current_dir))
+    data_path = os.path.join(qwels_path, "QWELS", "ANALYSIS", "DATASETS")
     text_path = os.path.join(data_path, "textsets")
 
     # Create visuals folder if it doesn't exist
@@ -291,8 +291,8 @@ if __name__ == "__main__":
         os.mkdir(visuals_path)
 
     # Example 1: Job Fun Analysis
-    df_jobfun = pd.read_excel(os.path.join(text_path, "MESSI_US_2024_JUNE.xlsx"),
-                              sheet_name="JOBFUN")
+    df_jobfun = pd.read_excel(os.path.join(text_path, "APP_FILE.xlsx"),
+                              sheet_name="messi_us_2024")
 
     fig1 = generate_ranked_wordcloud_bars(
         df=df_jobfun,

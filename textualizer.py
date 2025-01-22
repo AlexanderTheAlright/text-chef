@@ -8,12 +8,12 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import plotly.express as px
 import plotly.graph_objects as go
-from sklearn.manifold import TSNE
 import networkx as nx
 import os
 import time
 import re
 import random
+from functools import partial
 import nltk
 from nltk.corpus import stopwords
 from collections import Counter, defaultdict
@@ -24,6 +24,7 @@ from datetime import datetime
 import logging
 import matplotlib
 from itertools import combinations
+from sklearn.manifold import TSNE
 from sklearn.feature_extraction.text import CountVectorizer
 from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
@@ -221,6 +222,17 @@ def render_stopwords_management():
         else:
             st.error(msg)
 
+def get_cmap_fixed(name):
+    """
+    A helper function that uses the new Matplotlib colormaps API
+    if available, otherwise falls back to the older approach.
+    """
+    import matplotlib as mpl
+    if hasattr(mpl, "colormaps"):  # Matplotlib 3.7+
+        return mpl.colormaps.get_cmap(name)
+    else:
+        # For older Matplotlib versions
+        return mpl.cm.get_cmap(name)
 
 ###############################################################################
 # 3) SYNONYM GROUP MANAGEMENT
@@ -296,119 +308,224 @@ def render_synonym_groups_management():
 
 @st.cache_data
 def load_excel_file(excel, chosen_survey="All"):
-    """Load the question_mapping sheet + either chosen_survey or all."""
-    try:
-        xls = pd.ExcelFile(excel)
-        sheets = xls.sheet_names
-        if 'question_mapping' not in sheets:
-            return None, None, None, None
+    """Load the question_mapping sheet + either chosen_survey or all sheets."""
+    import pandas as pd
+    import os
 
-        qmap = pd.read_excel(xls, 'question_mapping')
-        if not all(c in qmap.columns for c in ['variable','question','surveyid']):
-            return None, None, None, None
-
-        responses_dict = {}
-        all_cols = set()
-        open_vars_set = set()
-
-        valid_sheets = [s for s in sheets if s != 'question_mapping']
-        if chosen_survey == "All":
-            sheets_to_load = valid_sheets
-        else:
-            sheets_to_load = [s for s in valid_sheets if s == chosen_survey]
-
-        invalid_resps = {
-            'dk','dk.','d/k','d.k.','dont know',"don't know","na","n/a","n.a.","n/a.",
-            'not applicable','none','nil','no response','no answer','.','-','x','refused','ref',
-            'dk/ref','nan','NaN','NAN','_dk_','_na_','___dk___','___na___','__dk__','__na__',
-            '_____dk_____','_____na_____',''
-        }
-
-        for sheet in sheets_to_load:
-            df = pd.read_excel(xls, sheet_name=sheet,
-                               na_values=['','NA','nan','NaN','null','none','#N/A','N/A'])
-            base_cols = {c.split('.')[0] for c in df.columns}
-            all_cols.update(base_cols)
-
-            open_candidates = {c for c in base_cols if c.endswith('_open')}
-            open_vars_set.update(open_candidates)
-
-            for col in df.columns:
-                if col.split('.')[0] in open_candidates:
-                    def clean_val(x):
-                        if pd.isna(x):
-                            return pd.NA
-                        x = str(x).lower().strip()
-                        if x in invalid_resps:
-                            return pd.NA
-                        return x
-                    df[col] = df[col].apply(clean_val)
-            responses_dict[sheet] = df
-
-        # grouping columns
-        grouping_cols = sorted(c for c in all_cols if not c.endswith('_open') and not c.endswith('.1'))
-
-        # open var options
-        open_var_opts = {}
-        for v in sorted(open_vars_set):
-            row_for_v = qmap[qmap['variable'] == v]
-            if not row_for_v.empty:
-                open_var_opts[v] = f"{v} - {row_for_v.iloc[0]['question']}"
-            else:
-                open_var_opts[v] = v
-
-        return qmap, responses_dict, open_var_opts, grouping_cols
-
-    except Exception as e:
-        print(f"Error loading file: {e}")
+    xls = pd.ExcelFile(excel)
+    sheets = xls.sheet_names
+    if 'question_mapping' not in sheets:
         return None, None, None, None
+
+    qmap = pd.read_excel(xls, 'question_mapping')
+    if not all(c in qmap.columns for c in ['variable', 'question', 'surveyid']):
+        return None, None, None, None
+
+    responses_dict = {}
+    all_cols = set()
+    open_vars_set = set()
+
+    valid_sheets = [s for s in sheets if s != 'question_mapping']
+    if chosen_survey == "All":
+        sheets_to_load = valid_sheets
+    else:
+        sheets_to_load = [s for s in valid_sheets if s == chosen_survey]
+
+    invalid_resps = {
+        'dk', 'dk.', 'd/k', 'd.k.', 'dont know', "don't know", "na", "n/a", "n.a.", "n/a.",
+        'not applicable', 'none', 'nil', 'no response', 'no answer', '.', '-', 'x', 'refused', 'ref',
+        'dk/ref', 'nan', 'NaN', 'NAN', '_dk_', '_na_', '___dk___', '___na___', '__dk__', '__na__',
+        '_____dk_____', '_____na_____', ''
+    }
+
+    for sheet in sheets_to_load:
+        df = pd.read_excel(xls, sheet_name=sheet, na_values=['', 'NA', 'nan', 'NaN', 'null', 'none', '#N/A', 'N/A'])
+        base_cols = {c.split('.')[0] for c in df.columns}
+        all_cols.update(base_cols)
+
+        open_candidates = {c for c in base_cols if c.endswith('_open')}
+        open_vars_set.update(open_candidates)
+
+        # Clean any _open columns
+        for col in df.columns:
+            if col.split('.')[0] in open_candidates:
+                def clean_val(x):
+                    if pd.isna(x):
+                        return pd.NA
+                    x = str(x).lower().strip()
+                    return pd.NA if x in invalid_resps else x
+
+                df[col] = df[col].apply(clean_val)
+
+        responses_dict[sheet] = df
+
+    # Instead of excluding _open columns from the grouping options,
+    # we now *include* them (plus any other columns).
+    # Remove only the .1 duplicates if you want.
+    grouping_cols = sorted(c for c in all_cols if not c.endswith('.1'))
+
+    # Build "open_var_opts" from question_mapping
+    open_var_opts = {}
+    for v in sorted(open_vars_set):
+        row_for_v = qmap[qmap['variable'] == v]
+        if not row_for_v.empty:
+            open_var_opts[v] = f"{v} - {row_for_v.iloc[0]['question']}"
+        else:
+            open_var_opts[v] = v
+
+    return qmap, responses_dict, open_var_opts, grouping_cols
+
+
+# -----------------------------------------------------------
+# In your sidebar or wherever you choose "Group By":
+# Now use `st.multiselect` (instead of `st.selectbox`)
+# so the user can pick multiple columns.
+# -----------------------------------------------------------
+
+# Example sidebar usage:
+def sidebar_controls(open_var_list, group_col_list):
+    """
+    :param open_var_list: A list of all available _open variables (e.g. ['job_open','feedback_open',...])
+    :param group_col_list: A list of all potential grouping columns (including _open if desired)
+
+    Returns:
+      chosen_opens -> list of open vars user selected
+      chosen_groups -> list of columns to group by
+    """
+    st.markdown("### Select Open Variables")
+    chosen_opens = st.multiselect(
+        "Pick one or more _open variables to analyze:",
+        options=open_var_list,
+        default=[]
+    )
+
+    st.markdown("### Group By Columns")
+    chosen_groups = st.multiselect(
+        "Pick one or more columns to group by:",
+        options=group_col_list,
+        default=[]
+    )
+
+    return chosen_opens, chosen_groups
 
 
 def get_responses_for_variable(dfs_dict, var, group_by=None):
-    """Fetch responses for a chosen var across all sheets, optionally grouped."""
     import re
     from collections import defaultdict
 
-    out = {}
+    # This function now accepts either a single string for 'group_by'
+    # or a list of columns (including multiple *_open columns if desired).
+    # If 'group_by' is None, all text entries are aggregated into one "All" group.
+
+    out = defaultdict(list)
     pattern = f"^{re.escape(var)}(?:\\.1)?$"
 
+    # Normalize group_by to a list if it's a single string
+    if group_by and isinstance(group_by, str):
+        group_by = [group_by]
+
     for sid, df in dfs_dict.items():
-        # columns that match var or var.1
+        # Find columns that match var or var.1
         matching_cols = [c for c in df.columns if re.match(pattern, c, re.IGNORECASE)]
         if not matching_cols:
             continue
 
-        if group_by and group_by in df.columns:
-            grouped_responses = defaultdict(list)
+        if group_by and all(gb in df.columns for gb in group_by):
+            # Group by multiple columns (or a single column, but in list form)
             for col in matching_cols:
-                sub_df = df[[col, group_by]].dropna(subset=[col])
-                for gval, cdf in sub_df.groupby(group_by):
-                    # filter empties
-                    texts = [r for r in cdf[col].astype(str).tolist() if r.strip().lower() != 'nan']
-                    if texts:
-                        grouped_responses[str(gval)].extend(texts)
-            for gval, arr in grouped_responses.items():
-                if arr:
-                    out[f"{sid}_{gval}"] = arr
+                sub_df = df[[col] + group_by].dropna(subset=[col])
+                for _, row in sub_df.iterrows():
+                    text_val = str(row[col]).strip()
+                    if text_val.lower() != 'nan' and text_val != '':
+                        # Build a composite key from all group_by columns
+                        group_values = [str(row[gb]) for gb in group_by]
+                        group_key = "_".join(group_values)
+                        out[group_key].append(text_val)
         else:
+            # If no group_by or invalid group_by, unify everything into a single 'All' group
             all_texts = []
             for col in matching_cols:
-                colvals = [r for r in df[col].dropna().astype(str).tolist() if r.strip().lower() != 'nan']
+                colvals = [
+                    str(r).strip() for r in df[col].dropna()
+                    if str(r).strip().lower() != 'nan'
+                ]
                 all_texts.extend(colvals)
             if all_texts:
-                # remove duplicates
-                seen = set()
-                uniq = []
-                for t in all_texts:
-                    if t not in seen:
-                        seen.add(t)
-                        uniq.append(t)
-                out[sid] = uniq
+                out["All"].extend(all_texts)
 
-    # Sort by descending # of responses
+    # Sort by descending number of responses
     out = dict(sorted(out.items(), key=lambda x: len(x[1]), reverse=True))
     return out
 
+
+def build_var_resps_for_multiselect(
+        dfs_dict,
+        open_vars,
+        group_by_cols=None
+):
+    """
+    :param dfs_dict: dict of DataFrame by sheet (e.g., from load_excel_file)
+    :param open_vars: list of open variables the user wants to analyze
+    :param group_by_cols: list of columns to group by (can be 0, 1, or many)
+
+    Returns a dict { "label_for_graph": [list of text], ... }
+    where label_for_graph is e.g. "job_open|Female|Ontario" if multiple group-bys.
+    """
+    if group_by_cols is None:
+        group_by_cols = []
+
+    out = defaultdict(list)
+
+    # Build a regex pattern for each open var to match var or var.1 columns
+    for open_var in open_vars:
+        pattern = f"^{re.escape(open_var)}(?:\\.1)?$"
+
+        # Loop each sheet
+        for sid, df in dfs_dict.items():
+            # Find columns that match the open var
+            matching_cols = [c for c in df.columns if re.match(pattern, c, re.IGNORECASE)]
+            if not matching_cols:
+                continue
+
+            # If no group_by_cols, everything lumps into a single label
+            if not group_by_cols:
+                combined_label = open_var  # or f"{open_var} (All)"
+                texts = []
+                for col in matching_cols:
+                    colvals = df[col].dropna().astype(str).str.strip()
+                    colvals = colvals[colvals.str.lower() != 'nan']
+                    texts.extend(colvals.tolist())
+                if texts:
+                    out[combined_label].extend(texts)
+
+            else:
+                # We do grouping across all chosen columns
+                used_cols = matching_cols + group_by_cols
+                sub_df = df[used_cols].dropna(subset=matching_cols)
+
+                # For each row, build a label from group_by_cols
+                for _, row in sub_df.iterrows():
+                    # pick the open column that is not empty
+                    # (in practice, there might be multiple matching_cols, e.g. var and var.1)
+                    found_text = None
+                    for mc in matching_cols:
+                        val_ = str(row[mc]).strip()
+                        if val_.lower() != 'nan' and val_ != '':
+                            found_text = val_
+                            break
+                    if not found_text:
+                        continue
+
+                    # Build the group part
+                    group_parts = []
+                    for gcol in group_by_cols:
+                        gval = str(row[gcol]).strip() if pd.notna(row[gcol]) else "Missing"
+                        group_parts.append(gval)
+
+                    # Combine open var name + group values => final label
+                    # E.g. "job_open|Female|Ontario"
+                    combined_label = "|".join([open_var] + group_parts)
+                    out[combined_label].append(found_text)
 
 ###############################################################################
 # 5) TEXT PROCESSING
@@ -448,8 +565,24 @@ def process_text(text, stopwords=None, synonym_groups=None):
 
 
 ###############################################################################
-# Utility functions to load & save open-coding state
+# OPEN CODING
 ###############################################################################
+def auto_save_check():
+    """
+    Automatically save coding state every 5 minutes if changes have been made
+    and not saved since then.
+    """
+    # Ensure we have a 'last_save_time' in session_state
+    if "last_save_time" not in st.session_state:
+        st.session_state.last_save_time = time.time()
+        return
+
+    # If 5 minutes (300 seconds) have passed since last_save_time, do an auto-save
+    if (time.time() - st.session_state.last_save_time) > 300:
+        if save_coding_state():
+            st.sidebar.info("Auto-saved coding changes.")
+        else:
+            st.sidebar.warning("Auto-save attempted but failed.")
 
 def load_open_coding_groups(file='cached_groups.csv'):
     """
@@ -464,87 +597,78 @@ def load_open_coding_groups(file='cached_groups.csv'):
             pass
     return []
 
+def save_open_coding_groups(file='cached_groups.csv'):
+    """Save the current open_coding_groups to CSV."""
+    df_g = pd.DataFrame(st.session_state.open_coding_groups)
+    df_g.to_csv(file, index=False)
+
 def load_open_coding_assignments(file='cached_assignments.csv'):
     """
-    Load open-coding assignments from CSV -> session_state.open_coding_assignments.
-    We'll store them keyed by (id, surveyid, variable, text) = group.
-    The CSV has columns: id, surveyid, variable, text, group
+    Load open-coding assignments from CSV -> session_state.open_coding_assignments
+    Keyed by (id, variable).
     """
     if os.path.exists(file):
         try:
             df = pd.read_csv(file)
-            # Build a dictionary keyed by (id, surveyid, variable, text)
-            # e.g. {('001','surveyA','job_open','some text'): 'Group1', ...}
             assignment_dict = {}
             for _, row in df.iterrows():
-                # Convert row["id"] etc. to string if needed, but usually they're okay
-                key = (
-                    str(row["id"]) if not pd.isna(row["id"]) else "",
-                    str(row["surveyid"]) if not pd.isna(row["surveyid"]) else "",
-                    str(row["variable"]) if not pd.isna(row["variable"]) else "",
-                    str(row["text"]) if not pd.isna(row["text"]) else ""
-                )
-                assignment_dict[key] = row["group"]
+                id = str(row["id"]) if "id" in row and pd.notna(row["id"]) else ""
+                var = str(row["variable"]) if "variable" in row and pd.notna(row["variable"]) else ""
+                grp = row["group"] if "group" in row else "Unassigned"
+                dict_key = (id, var)
+                assignment_dict[dict_key] = grp
             return assignment_dict
         except:
             pass
     return {}
 
+def save_open_coding_assignments(file='cached_assignments.csv'):
+    """
+    Saves open-coding assignments from st.session_state.open_coding_assignments
+    Keyed by (id, variable).
+    """
+    row_list = []
+    for (id, var), grp in st.session_state.open_coding_assignments.items():
+        row_list.append({
+            "id": id,
+            "variable": var,
+            "group": grp
+        })
+    df_a = pd.DataFrame(row_list)
+    df_a.to_csv(file, index=False)
+
 def save_coding_state():
     """
     Saves the group definitions + the coded assignments to disk,
-    plus timestamped backup copies in 'coding_backups/'.
-    Ensures assigned groups remain properly linked to each unique ID+surveyid+variable+text row.
+    plus optional timestamped backup copies in 'coding_backups/'.
     """
     try:
         # 1) Save group definitions
         if st.session_state.open_coding_groups:
-            df_g = pd.DataFrame(st.session_state.open_coding_groups)
-            df_g.to_csv('cached_groups.csv', index=False)
+            save_open_coding_groups('cached_groups.csv')
 
         # 2) Save open-coding assignments
-        #    which are stored as dict { (id, surveyid, variable, text): group }
         if st.session_state.open_coding_assignments:
-            row_list = []
-            for (pid, psurvey, pvar, ptext), grp in st.session_state.open_coding_assignments.items():
-                row_list.append({
-                    "id": pid,
-                    "surveyid": psurvey,
-                    "variable": pvar,
-                    "text": ptext,
-                    "group": grp
-                })
-            df_a = pd.DataFrame(row_list)
-            df_a.to_csv('cached_assignments.csv', index=False)
+            save_open_coding_assignments('cached_assignments.csv')
 
-        # 3) Also save time-stamped backups
+        # 3) Also optional time-stamped backups
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         os.makedirs('coding_backups', exist_ok=True)
+
         if st.session_state.open_coding_groups:
-            df_g.to_csv(f"coding_backups/groups_{ts}.csv", index=False)
+            save_open_coding_groups(f"coding_backups/groups_{ts}.csv")
+
         if st.session_state.open_coding_assignments:
-            df_a.to_csv(f"coding_backups/assignments_{ts}.csv", index=False)
+            save_open_coding_assignments(f"coding_backups/assignments_{ts}.csv")
 
         st.session_state.last_save_time = time.time()
         return True
     except Exception as e:
-        print(f"Error saving coding state: {e}")
+        st.error(f"Error saving coding state: {e}")
         return False
 
 def initialize_coding_state():
-    """Ensure open coding data is loaded from disk exactly once."""
-    if 'coding_initialized' not in st.session_state:
-        st.session_state.open_coding_groups = load_open_coding_groups()
-        st.session_state.open_coding_assignments = load_open_coding_assignments()
-        st.session_state.coding_initialized = True
-
-def auto_save_check():
-    """Placeholder for any periodic auto-save logic if desired."""
-    pass
-
-
-def initialize_coding_state():
-    """Ensure open coding data is loaded from disk exactly once."""
+    """Ensure open coding data is loaded exactly once."""
     if 'coding_initialized' not in st.session_state:
         st.session_state.open_coding_groups = load_open_coding_groups()
         st.session_state.open_coding_assignments = load_open_coding_assignments()
@@ -552,77 +676,130 @@ def initialize_coding_state():
 
     # Also ensure we have a place to store the table data by variable
     if 'open_coding_table_data' not in st.session_state:
-        st.session_state.open_coding_table_data = {}  # dict keyed by variable -> final_df
+        st.session_state.open_coding_table_data = {}  # dict {var -> final_df}
 
+def update_coded_assignments(variable, df_updated, final_df):
+    """
+    Called after user clicks "Save Changes".
+    We pass in df_updated (the return from st.data_editor) so we definitely have
+    the user's edits. We then store them in st.session_state.open_coding_assignments
+    using (id, variable). Also updates final_df accordingly, then saves to disk.
+    """
 
-def render_open_coding_interface(variable,
-                                 responses_dict,
-                                 open_var_options,
-                                 grouping_columns,
-                                 group_by=None):
-    """
-    Renders an integrated "Open Coding" interface that includes:
-      - Managing groups
-      - A coded table (with stable filters)
-      - Exporting full or filtered data
-      - Random sampling & assignment
-      - Ensures all assigned groups remain attached to (id+surveyid+variable+text).
-      - Final CSV columns:
-         id, surveyid, age, gender, region, jobtitle, basevar, openvar, coded_group, group_description
-    """
+    # If user made no changes at all, df_updated could be identical to final_df
+    # But let's always accept it in case there's subtle changes:
+    if df_updated.empty:
+        st.warning("No data in the updated table. Nothing to save.")
+        return
+
+    # 1) Update the assignments dictionary
+    for i, row in df_updated.iterrows():
+        id = str(row.get("id", "")) or str(row.get("id", ""))
+        new_grp = row.get("coded_group", "Unassigned")
+        dict_key = (id, variable)
+        st.session_state.open_coding_assignments[dict_key] = new_grp
+
+    # 2) Reflect changes back in final_df
+    for idx_ in final_df.index:
+        row_ = final_df.loc[idx_]
+        id_ = str(row_.get("id", "")) or str(row_.get("id", ""))
+        dict_key = (id_, variable)
+        assigned = st.session_state.open_coding_assignments.get(dict_key, "Unassigned")
+        final_df.at[idx_, "coded_group"] = assigned
+
+        if assigned != "Unassigned":
+            gobj = next((g for g in st.session_state.open_coding_groups if g["name"] == assigned), None)
+            final_df.at[idx_, "group_description"] = gobj["desc"] if gobj else ""
+        else:
+            final_df.at[idx_, "group_description"] = ""
+
+    # 3) Save
+    saved = save_coding_state()
+    if saved:
+        st.success("Changes were saved successfully.")
+    else:
+        st.error("Error saving changes.")
+        
+def render_open_coding_interface(variable, responses_dict, open_var_options, grouping_columns):
     initialize_coding_state()
+
+    # Call auto_save_check at the beginning
     auto_save_check()
 
-    st.markdown("## 🔎 Open Coding & Samples")
+    # 1) Combine & cache the relevant DataFrame for the chosen variable
+    if variable not in st.session_state.open_coding_table_data:
+        # Gather all frames that have 'variable' column
+        all_dfs = []
+        for sid, df in responses_dict.items():
+            if variable in df.columns:
+                tmp = df.copy()
+                tmp["surveyid"] = sid
+                all_dfs.append(tmp)
 
-    # Style for question box
-    st.markdown("""
-    <style>
-        .question-box {
-            border: 2px solid #4CAF50;
-            border-radius: 10px;
-            padding: 20px;
-            background-color: #f8f9fa;
-            margin: 10px 0;
-        }
-        .question-label {
-            color: #2E7D32;
-            font-size: 1.2em;
-            margin-bottom: 10px;
-            font-weight: bold;
-        }
-        .question-text {
-            color: #1a1a1a;
-            font-size: 1.1em;
-            line-height: 1.5;
-            font-weight: 600;
-        }
-    </style>
-    """, unsafe_allow_html=True)
+        if not all_dfs:
+            st.warning("No valid data found for this variable.")
+            return
 
-    # Show question text
-    question_text = open_var_options.get(variable, "No question text")
-    st.markdown(f"""
-    <div class="question-box">
-        <div class="question-label">Primary Question</div>
-        <div class="question-text">{question_text}</div>
-    </div>
-    """, unsafe_allow_html=True)
+        cdf = pd.concat(all_dfs, ignore_index=True)
+        cdf = cdf.dropna(subset=[variable])
+        cdf = cdf[cdf[variable].astype(str).str.strip() != ""]
 
-    ###########################################################################
-    # Manage Groups
-    ###########################################################################
-    st.markdown("### Manage Groups")
-    with st.expander("Create/Edit Groups", expanded=False):
+        # Initialize columns if missing
+        if "coded_group" not in cdf.columns:
+            cdf["coded_group"] = "Unassigned"
+        if "group_description" not in cdf.columns:
+            cdf["group_description"] = ""
+
+        # Apply existing assignments
+        for idx, row in cdf.iterrows():
+            # If your file has "id", use that first; else fallback to "id"
+            id = str(row.get("id", "")) or str(row.get("id", ""))
+            dict_key = (id, variable)
+            assigned_grp = st.session_state.open_coding_assignments.get(dict_key, "Unassigned")
+            cdf.at[idx, "coded_group"] = assigned_grp
+
+            if assigned_grp != "Unassigned":
+                gobj = next((g for g in st.session_state.open_coding_groups if g["name"] == assigned_grp), None)
+                if gobj:
+                    cdf.at[idx, "group_description"] = gobj.get("desc", "")
+
+        st.session_state.open_coding_table_data[variable] = cdf
+
+    # 2) Retrieve our "final_df" from session_state
+    final_df = st.session_state.open_coding_table_data[variable]
+    if final_df.empty:
+        st.warning("No valid data rows for this variable.")
+        return
+
+    # =================== PIE CHART FOR PROPORTIONS =======================
+    group_counts = final_df["coded_group"].value_counts(dropna=False).reset_index()
+    group_counts.columns = ["Group", "Count"]
+    total_n = group_counts["Count"].sum()
+    if total_n > 0:
+        fig_pie = px.pie(
+            group_counts,
+            values="Count",
+            names="Group",
+            title="Proportion of Each Coded Group",
+            hole=0.3
+        )
+        fig_pie.update_layout(width=600, height=400)
+        st.plotly_chart(fig_pie, use_container_width=False)
+    else:
+        st.info("No coded groups yet.")
+
+    # =================== GROUP MANAGEMENT UI ===================
+    st.markdown("---")
+    st.subheader("🗂️ Manage Groups")
+    with st.container():
         c1, c2 = st.columns([3, 1])
         with c1:
             new_group_name = st.text_input("Group Name:")
-            new_group_desc = st.text_input("Group Description (optional):")
-            if st.button("Add / Update Group"):
+            new_group_desc = st.text_input("Group Description:")
+            if st.button("➕ Add / Update Group"):
                 gname = new_group_name.strip()
                 if gname:
-                    existing = next((g for g in st.session_state.open_coding_groups
-                                     if g['name'] == gname), None)
+                    existing = next((g for g in st.session_state.open_coding_groups if g['name'] == gname), None)
                     if existing:
                         existing["desc"] = new_group_desc.strip()
                         st.success(f"Updated group '{gname}'.")
@@ -635,243 +812,143 @@ def render_open_coding_interface(variable,
                     save_coding_state()
                 else:
                     st.warning("Please enter a valid group name.")
-
         with c2:
-            if st.button("💾 Save Group Changes"):
+            if st.button("💾 Save Groups"):
                 if save_coding_state():
                     st.success("Groups saved.")
                 else:
                     st.error("Error saving groups.")
 
-        # Remove group
-        del_choice = st.selectbox(
-            "Remove a Group?",
+        # Remove a group
+        delete_choice = st.selectbox(
+            "❌ Remove a group?",
             ["(None)"] + [g["name"] for g in st.session_state.open_coding_groups]
         )
-        if del_choice != "(None)":
-            if st.button(f"Remove Group '{del_choice}'"):
-                # Remove from the group list
+        if delete_choice != "(None)":
+            if st.button(f"🗑️ Remove Group '{delete_choice}'"):
+                # Remove from group list
                 st.session_state.open_coding_groups = [
-                    g for g in st.session_state.open_coding_groups
-                    if g['name'] != del_choice
+                    g for g in st.session_state.open_coding_groups if g["name"] != delete_choice
                 ]
-                # Remove from assignments
-                for k, assigned_grp in list(st.session_state.open_coding_assignments.items()):
-                    if assigned_grp == del_choice:
+                # Unassign any references in existing coded assignments
+                for k, v in list(st.session_state.open_coding_assignments.items()):
+                    if v == delete_choice:
                         st.session_state.open_coding_assignments[k] = "Unassigned"
                 save_coding_state()
-                st.success(f"Group '{del_choice}' removed.")
+                st.success(f"Removed group '{delete_choice}'")
+                st.experimental_rerun()
 
-    ###########################################################################
-    # Build or retrieve the main DataFrame for the variable in question
-    ###########################################################################
-    # If we've never built it for this variable, do it once now
-    if variable not in st.session_state.open_coding_table_data:
-        all_dfs = []
-        for sid, df in responses_dict.items():
-            if variable in df.columns:
-                tmp = df.copy()
-                tmp['surveyid'] = sid
-                # Standardize 'region' if present
-                if 'province' in tmp.columns:
-                    tmp['region'] = tmp['province']
-                    tmp.drop('province', axis=1, inplace=True)
-                elif 'state' in tmp.columns:
-                    tmp['region'] = tmp['state']
-                    tmp.drop('state', axis=1, inplace=True)
-                all_dfs.append(tmp)
-        if not all_dfs:
-            st.warning("No valid data found for this variable.")
-            return
+    # =================== FILTERING & TABLE EDITOR ===================
+    st.markdown("---")
+    st.subheader("🔎 Data Selection & Filters")
 
-        cdf = pd.concat(all_dfs, ignore_index=True)
+    default_cols = ["id", "surveyid", "age", "gender", "region", "jobtitle"]
+    base_var = variable.replace("_open", "")
+    col_candidates = [c for c in grouping_columns if c not in default_cols and c not in [variable, base_var]]
+    user_cols = st.multiselect("Pick additional columns to display:", options=col_candidates, default=[])
 
-        default_cols = ['id', 'surveyid', 'age', 'gender', 'region', 'jobtitle']
-        base_var = variable.replace('_open', '')
-        # Exclude defaults + the open var from the grouping list
-        col_candidates = [c for c in grouping_columns
-                          if c not in default_cols and c != variable and c != base_var]
-
-        # For initial build, just store the entire "unfiltered" table in session_state
-        # We'll add two extra columns: coded_group, group_description
-        # Filter out blank/NaN open responses
-        cdf = cdf.dropna(subset=[variable])
-        cdf = cdf[cdf[variable].astype(str).str.strip() != ""]
-        if base_var not in cdf.columns:
-            cdf[base_var] = None  # if missing
-        # Provide columns in a standard order
-        # We'll store all columns so that future expansions won't cause "new data" resets
-        if 'coded_group' not in cdf.columns:
-            cdf['coded_group'] = "Unassigned"
-        if 'group_description' not in cdf.columns:
-            cdf['group_description'] = ""
-
-        # Now fill coded_group, group_description from st.session_state.open_coding_assignments
-        for idx, row in cdf.iterrows():
-            pid = str(row['id']) if 'id' in row and pd.notna(row['id']) else ""
-            psurvey = str(row['surveyid']) if 'surveyid' in row and pd.notna(row['surveyid']) else ""
-            pvar = variable
-            ptext = str(row[variable]).strip()
-            dict_key = (pid, psurvey, pvar, ptext)
-            assigned_grp = st.session_state.open_coding_assignments.get(dict_key, "Unassigned")
-            cdf.at[idx, 'coded_group'] = assigned_grp
-            if assigned_grp != "Unassigned":
-                gobj = next((g for g in st.session_state.open_coding_groups
-                             if g['name'] == assigned_grp), None)
-                if gobj:
-                    cdf.at[idx, 'group_description'] = gobj.get("desc", "")
-
-        # Store in session_state
-        st.session_state.open_coding_table_data[variable] = cdf
-
-    # Now we always refer to the same DataFrame object
-    final_df = st.session_state.open_coding_table_data[variable]
-
-    # Re-check if it's empty
-    if final_df.empty:
-        st.warning("No valid data rows for this variable.")
-        return
-
-    # Data selection UI for columns
-    st.markdown("### Data Selection")
-    default_cols = ['id', 'surveyid', 'age', 'gender', 'region', 'jobtitle']
-    base_var = variable.replace('_open', '')
-    col_candidates = [c for c in grouping_columns
-                      if c not in default_cols and c != variable and c != base_var]
-
-    user_cols = st.multiselect(
-        "Pick additional columns to display:",
-        options=col_candidates,
-        default=[]
-    )
-
-    # We build a final column set:
     used_cols = []
-    for col in default_cols:
-        if col in final_df.columns and col not in used_cols:
-            used_cols.append(col)
+    for dc in default_cols:
+        if dc in final_df.columns and dc not in used_cols:
+            used_cols.append(dc)
     if base_var in final_df.columns and base_var not in used_cols:
         used_cols.append(base_var)
     used_cols.extend(user_cols)
     if variable not in used_cols:
         used_cols.append(variable)
-    # We always want coded_group, group_description at the end
-    if 'coded_group' not in used_cols:
-        used_cols.append('coded_group')
-    if 'group_description' not in used_cols:
-        used_cols.append('group_description')
+    # Add coded group columns last
+    if "coded_group" not in used_cols:
+        used_cols.append("coded_group")
+    if "group_description" not in used_cols:
+        used_cols.append("group_description")
 
-    # De-duplicate while preserving order
+    # Deduplicate while preserving order
     used_cols = list(dict.fromkeys(used_cols))
 
-    # Filter UI
-    show_table_expander = st.expander("🔎 View & Edit Full Table", expanded=False)
-    with show_table_expander:
-        # Build filter inputs
-        gl_search = st.text_input(
-            "Global Search/Filter:",
-            value=st.session_state.get("oc_global_search", ""),
-            key="oc_global_search"
-        )
-        show_col_filters = st.checkbox(
-            "Show column-based filters",
-            value=st.session_state.get("oc_show_col_filters", False),
-            key="oc_show_col_filters"
-        )
-        col_filters = {}
-        if show_col_filters:
-            st.write("Column filters (case-insensitive substring match):")
-            columns_per_row = 3
-            fil_cols = st.columns(columns_per_row)
-            for i, c in enumerate(used_cols):
-                filter_key = f"oc_filter_{c}"
-                default_val = st.session_state.get(filter_key, "")
-                with fil_cols[i % columns_per_row]:
-                    col_filters[c] = st.text_input(f"Filter {c}", default_val, key=filter_key)
+    # Global filter
+    global_search = st.text_input("Global Search / Filter:", "", key="oc_global_search")
+    show_col_filters = st.checkbox("Show column-based filters", value=False, key="oc_show_col_filters")
+    col_filters = {}
+    if show_col_filters:
+        st.caption("Case-insensitive substring match per column.")
+        ncols_per_line = 3
+        filter_cols = st.columns(ncols_per_line)
+        for i, c in enumerate(used_cols):
+            with filter_cols[i % ncols_per_line]:
+                col_filters[c] = st.text_input(f"Filter: {c}", "")
 
-        # Apply filters to a *copy* of final_df
-        df_for_editor = final_df[used_cols].copy()
+    # Prepare data
+    df_for_editor = final_df[used_cols].copy()
 
-        # 1) Global filter
-        if gl_search.strip():
-            mask = pd.Series(False, index=df_for_editor.index)
-            for col_ in df_for_editor.columns:
-                mask |= df_for_editor[col_].astype(str).str.contains(gl_search, case=False, na=False)
-            df_for_editor = df_for_editor[mask]
+    # Global search
+    if global_search.strip():
+        mask = pd.Series(False, index=df_for_editor.index)
+        for col_ in df_for_editor.columns:
+            mask |= df_for_editor[col_].astype(str).str.contains(global_search, case=False, na=False)
+        df_for_editor = df_for_editor[mask]
 
-        # 2) Column filters
-        if show_col_filters:
-            for c, val in col_filters.items():
-                if val.strip():
-                    df_for_editor = df_for_editor[
-                        df_for_editor[c].astype(str).str.contains(val, case=False, na=False)
-                    ]
+    # Column filters
+    if show_col_filters:
+        for c, val in col_filters.items():
+            if val.strip():
+                df_for_editor = df_for_editor[
+                    df_for_editor[c].astype(str).str.contains(val, case=False, na=False)
+                ]
 
-        # Build column_config for data_editor
-        colconf = {}
-        colconf['coded_group'] = st.column_config.SelectboxColumn(
-            "Coded Group",
-            options=["Unassigned"] + [g["name"] for g in st.session_state.open_coding_groups],
-            help="Pick group from dropdown"
-        )
-        colconf['group_description'] = st.column_config.TextColumn(
-            "Group Description",
-            disabled=True
-        )
-        for c in df_for_editor.columns:
-            if c not in ['coded_group', 'group_description']:
-                colconf[c] = st.column_config.TextColumn(c, disabled=True)
+    st.markdown("---")
+    st.subheader("⚓ Coding Table")
+    st.markdown("""
+    <style>
+    .coded-table-container {
+        margin-top: 5px;
+        margin-bottom: 20px;
+        border: 1px solid #CCC;
+        background-color: #FAFAFA;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    st.markdown('<div class="coded-table-container">', unsafe_allow_html=True)
 
-        # Define a callback that updates st.session_state.open_coding_assignments
-        def update_coded_assignments():
-            # st.session_state["open_coding_data_editor"] is the *new* df
-            updated_df = st.session_state["open_coding_data_editor"]
-            # We'll match up rows by (id, surveyid, variable, text)
-            for i, row_i in updated_df.iterrows():
-                pid = str(row_i['id']) if 'id' in row_i and pd.notna(row_i['id']) else ""
-                psurvey = str(row_i['surveyid']) if 'surveyid' in row_i and pd.notna(row_i['surveyid']) else ""
-                pvar = variable
-                ptext = str(row_i[variable]).strip()
-                dict_key = (pid, psurvey, pvar, ptext)
-                new_grp = row_i['coded_group']
+    # Build column config
+    col_config = {}
+    group_names = ["Unassigned"] + [g["name"] for g in st.session_state.open_coding_groups]
+    for c in df_for_editor.columns:
+        if c == "coded_group":
+            col_config[c] = st.column_config.SelectboxColumn(
+                label="coded group",
+                options=group_names
+            )
+        elif c == "group_description":
+            col_config[c] = st.column_config.TextColumn(
+                label="group description",
+                disabled=True
+            )
+        else:
+            col_config[c] = st.column_config.TextColumn(
+                label=c,
+                disabled=True
+            )
 
-                st.session_state.open_coding_assignments[dict_key] = new_grp
+    # -- Here is the crucial change: we capture the returned "df_updated" --
+    df_updated = st.data_editor(
+        df_for_editor,
+        column_config=col_config,
+        hide_index=True,
+        use_container_width=True
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
 
-            # Also keep final_df in sync so we do not appear to have "new" data
-            # We'll align by index since updated_df is the same shape as df_for_editor
-            # But we only update those rows that are currently *visible* in df_for_editor
-            # (All other rows remain unchanged.)
-            for idx_ in df_for_editor.index:
-                if idx_ in updated_df.index:
-                    new_grp_val = updated_df.at[idx_, 'coded_group']
-                    new_desc = ""
-                    if new_grp_val != "Unassigned":
-                        # find the group
-                        gobj_ = next((g for g in st.session_state.open_coding_groups
-                                      if g['name'] == new_grp_val), None)
-                        if gobj_:
-                            new_desc = gobj_.get("desc", "")
-                    final_df.at[idx_, 'coded_group'] = new_grp_val
-                    final_df.at[idx_, 'group_description'] = new_desc
+    # =================== SAVE CHANGES BUTTON ===================
+    if st.button("💾 Save Changes"):
+        update_coded_assignments(variable, df_updated, final_df)  # Pass df_updated directly!
 
-        edited_df = st.data_editor(
-            df_for_editor,
-            column_config=colconf,
-            hide_index=True,
-            use_container_width=True,
-            key="open_coding_data_editor",
-            on_change=update_coded_assignments
-        )
-
-        #######################################################################
-        # EXPORTS
-        #######################################################################
-        st.markdown("#### Export")
+        # ============== OPTIONAL EXPORTS ==============
+        st.markdown("#### 📤 Export")
         c_exp1, c_exp2, c_exp3 = st.columns(3)
 
-        # 1) Download current view (just what's in 'edited_df')
+        # 1) Download current view
         with c_exp1:
-            cur_csv = edited_df.to_csv(index=False).encode('utf-8')
+            cur_csv = df_updated.to_csv(index=False).encode('utf-8')
             st.download_button(
                 label="💾 Download Current View CSV",
                 data=cur_csv,
@@ -880,32 +957,34 @@ def render_open_coding_interface(variable,
                 use_container_width=True
             )
 
-        # 2) Download entire dataset with coding (all rows in final_df)
+        # 2) Download entire dataset with coding
         with c_exp2:
             base_var = variable.replace('_open', '')
-            # We'll construct the final "spreadsheet" structure
             row_list = []
             for idx0, row0 in final_df.iterrows():
-                pid = str(row0['id']) if 'id' in row0 and pd.notna(row0['id']) else ""
-                psurvey = str(row0['surveyid']) if 'surveyid' in row0 and pd.notna(row0['surveyid']) else ""
+                id = str(row0.get('id', '')) or str(row0.get('id', ''))
+                psurvey = str(row0.get('surveyid', ''))
                 ptext = str(row0[variable]).strip()
                 assigned_grp0 = row0['coded_group']
                 grp_desc0 = row0['group_description']
                 row_list.append({
-                    "id": pid,
+                    "id": id,
                     "surveyid": psurvey,
-                    "age": row0["age"] if "age" in row0 else None,
-                    "gender": row0["gender"] if "gender" in row0 else None,
-                    "region": row0["region"] if "region" in row0 else None,
-                    "jobtitle": row0["jobtitle"] if "jobtitle" in row0 else None,
+                    "age": row0.get("age"),
+                    "gender": row0.get("gender"),
+                    "region": row0.get("region"),
+                    "jobtitle": row0.get("jobtitle"),
                     "basevar": base_var,
                     "openvar": ptext,
                     "coded_group": assigned_grp0,
                     "group_description": grp_desc0
                 })
             full_df = pd.DataFrame(row_list)
-            col_order = ["id", "surveyid", "age", "gender", "region", "jobtitle", "basevar", "openvar", "coded_group",
-                         "group_description"]
+            col_order = [
+                "id", "surveyid", "age", "gender", "region",
+                "jobtitle", "basevar", "openvar",
+                "coded_group", "group_description"
+            ]
             for cc in col_order:
                 if cc not in full_df.columns:
                     full_df[cc] = None
@@ -922,9 +1001,8 @@ def render_open_coding_interface(variable,
 
         # 3) Export only selected group(s)
         with c_exp3:
-            group_list = ["Unassigned"] + [g["name"] for g in st.session_state.open_coding_groups]
-            export_groups = st.multiselect("Select group(s) to export:", group_list, default=[])
-            if st.button("Export Selected Group(s)"):
+            export_groups = st.multiselect("Select group(s) to export:", group_names, default=[])
+            if st.button("📤 Export Selected Group(s)"):
                 if export_groups:
                     sub_df = full_df[full_df["coded_group"].isin(export_groups)]
                 else:
@@ -934,14 +1012,12 @@ def render_open_coding_interface(variable,
                     label="Download Selected Groups",
                     data=sub_csv,
                     file_name=f"selected_groups_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime='text/csv'
+                    mime="text/csv"
                 )
 
-    ###########################################################################
-    # Random Samples
-    ###########################################################################
+    # ============== RANDOM SAMPLES (optional) ==============
     st.markdown("---")
-    st.markdown("### Random Samples for Review")
+    st.markdown("### 🎲 Random Samples for Review")
 
     def build_samples_dict():
         """Gather random samples from responses_dict for the chosen variable."""
@@ -952,41 +1028,18 @@ def render_open_coding_interface(variable,
                     val = row[variable]
                     if pd.notna(val) and str(val).strip():
                         out["All"].append({
-                            "id": row["id"] if "id" in row else None,
+                            "id": str(row.get("id", "")) or str(row.get("id", "")),
                             "surveyid": sid,
                             "text": str(val).strip(),
-                            "age": row["age"] if "age" in row else None,
-                            "gender": row["gender"] if "gender" in row else None,
-                            "jobtitle": row["jobtitle"] if "jobtitle" in row else None,
-                            "region": row["region"] if "region" in row else None
+                            "age": row.get("age"),
+                            "gender": row.get("gender"),
+                            "jobtitle": row.get("jobtitle"),
+                            "region": row.get("region")
                         })
         return out
 
     samples_dict = build_samples_dict()
-
-    # If user has a group_by column, gather samples by that column too
-    if group_by and group_by not in [None, 'None']:
-        for sid, df in responses_dict.items():
-            if group_by in df.columns and variable in df.columns:
-                for gval in df[group_by].dropna().unique():
-                    cat_str = str(gval)
-                    sub_ = df[(df[group_by] == gval) & df[variable].notna()]
-                    for _, row in sub_.iterrows():
-                        vt = str(row[variable]).strip()
-                        if vt:
-                            if cat_str not in samples_dict:
-                                samples_dict[cat_str] = []
-                            samples_dict[cat_str].append({
-                                "id": row["id"] if "id" in row else None,
-                                "surveyid": sid,
-                                "text": vt,
-                                "age": row["age"] if "age" in row else None,
-                                "gender": row["gender"] if "gender" in row else None,
-                                "jobtitle": row["jobtitle"] if "jobtitle" in row else None,
-                                "region": row["region"] if "region" in row else None
-                            })
-
-    # De-duplicate repeated text in each category
+    import random
     for cat_k, items in samples_dict.items():
         seen_txt = set()
         newlist = []
@@ -996,7 +1049,7 @@ def render_open_coding_interface(variable,
                 newlist.append(obj)
         samples_dict[cat_k] = newlist
 
-    num_samp = st.slider("Number of samples per group", min_value=1, max_value=20, value=5)
+    num_samp = st.slider("Number of samples per group", 1, 20, 5)
     if st.button("🔀 Shuffle Samples"):
         st.session_state["sample_seed"] = int(time.time())
     random.seed(st.session_state.get("sample_seed", 1234))
@@ -1004,41 +1057,45 @@ def render_open_coding_interface(variable,
     for cat, arr in samples_dict.items():
         st.markdown(f"#### {cat} (Total: {len(arr)})")
         if not arr:
-            st.write("No data in this category.")
+            st.write("🚫 No data in this category.")
             continue
         sub_samp = random.sample(arr, min(num_samp, len(arr)))
         for i, obj in enumerate(sub_samp, 1):
             with st.expander(f"[{cat}] Sample #{i}", expanded=False):
                 meta_parts = []
-                if obj["id"]: meta_parts.append(f"ID: {obj['id']}")
-                if obj["age"]: meta_parts.append(f"Age: {obj['age']}")
-                if obj["gender"]: meta_parts.append(f"Gender: {obj['gender']}")
-                if obj["jobtitle"]: meta_parts.append(f"Job: {obj['jobtitle']}")
-                if obj["region"]: meta_parts.append(f"Region: {obj['region']}")
+                if obj["id"]:
+                    meta_parts.append(f"ID: {obj['id']}")
+                if obj["age"]:
+                    meta_parts.append(f"Age: {obj['age']}")
+                if obj["gender"]:
+                    meta_parts.append(f"Gender: {obj['gender']}")
+                if obj["jobtitle"]:
+                    meta_parts.append(f"Job: {obj['jobtitle']}")
+                if obj["region"]:
+                    meta_parts.append(f"Region: {obj['region']}")
                 if meta_parts:
                     st.markdown("*" + " | ".join(meta_parts) + "*")
 
                 st.write(obj["text"])
 
                 # Let user assign to a group:
-                pid = str(obj['id']) if obj['id'] else ""
-                psurvey = str(obj["surveyid"]) if obj["surveyid"] else ""
-                pvar = variable
-                ptext = obj["text"]
-                dict_key = (pid, psurvey, pvar, ptext)
+                id = obj["id"]
+                dict_key = (id, variable)
                 assigned_grp_ = st.session_state.open_coding_assignments.get(dict_key, "Unassigned")
                 grp_list = ["Unassigned"] + [g["name"] for g in st.session_state.open_coding_groups]
+                if assigned_grp_ not in grp_list:
+                    assigned_grp_ = "Unassigned"
                 new_sel = st.selectbox(
                     "Assign to group:",
                     options=grp_list,
-                    index=(grp_list.index(assigned_grp_) if assigned_grp_ in grp_list else 0),
+                    index=grp_list.index(assigned_grp_),
                     key=f"sample_{cat}_{i}"
                 )
                 st.session_state.open_coding_assignments[dict_key] = new_sel
 
     if st.button("💾 Save All Coding"):
         if save_coding_state():
-            st.success("Coding saved successfully.")
+            st.success("All coding saved successfully.")
         else:
             st.error("Error saving coding.")
 
@@ -1055,7 +1112,12 @@ def generate_word_freq(texts, exact_words=200):
     cleaned_texts = []
     for txt in texts:
         if isinstance(txt, str) and txt.strip():
-            proc = process_text(txt, st.session_state.custom_stopwords, st.session_state.synonym_groups)
+            # Make sure you have 'process_text' defined somewhere
+            proc = process_text(
+                txt,
+                st.session_state.custom_stopwords,
+                st.session_state.synonym_groups
+            )
             if proc:
                 cleaned_texts.append(proc)
     if not cleaned_texts:
@@ -1066,20 +1128,17 @@ def generate_word_freq(texts, exact_words=200):
     most_common = freq_counter.most_common(exact_words)
     return most_common
 
-
 def generate_interactive_wordcloud(freq_data, highlight_words=None, title='', exact_words=200, colormap='viridis'):
     """
     Returns a Plotly figure (scatter-based wordcloud).
     - highlight_words (set): highlight in a viridis-like color (#443983), else grey
-    - exact_words: top words to consider (already truncated in freq_data).
+    - exact_words: top words to consider
     - colormap is only used if highlight_words is empty; otherwise highlight logic is used.
     """
     if not freq_data:
         return None
 
-    # Ensure freq_data has at most 'exact_words'
     freq_data = freq_data[:exact_words]
-
     words = [w for w, _ in freq_data]
     freqs = [f for _, f in freq_data]
     max_f = max(freqs) if freqs else 1
@@ -1089,7 +1148,6 @@ def generate_interactive_wordcloud(freq_data, highlight_words=None, title='', ex
     golden_ratio = (1 + 5**0.5) / 2
     positions = []
     for i, f_val in enumerate(freqs):
-        # Spiral-ish layout
         r = (1 - f_val / max_f) * 200
         theta = i * 2 * np.pi * golden_ratio
         x = r * np.cos(theta)
@@ -1110,21 +1168,21 @@ def generate_interactive_wordcloud(freq_data, highlight_words=None, title='', ex
     custom_data = []
     color_list = []
 
-    # If highlight set is provided, highlight in viridis-like color (#443983), else grey
     if highlight_words:
+        # highlight in #443983, else gray
         for i, w in enumerate(words):
             highlight = (w.lower() in highlight_words)
             color_list.append("#443983" if highlight else "gray")
             custom_data.append((freqs[i], w, nearest_terms(i, 3)))
     else:
-        # Use chosen colormap via matplotlib, fix the randint usage:
-        import matplotlib as mpl
-        selected_cmap = mpl.cm.get_cmap(colormap)
+        # Use the new colormaps approach
+        import numpy as np
         import random
         random_state = np.random.RandomState(42)
+        selected_cmap = get_cmap_fixed(colormap)
 
         for i, w in enumerate(words):
-            color_idx = random_state.randint(0, 256)  # <-- FIX: specify (low, high)
+            color_idx = random_state.randint(0, 256)
             r, g, b, _ = selected_cmap(color_idx / 255.0)
             color_list.append(f"rgb({int(r*255)}, {int(g*255)}, {int(b*255)})")
             custom_data.append((freqs[i], w, nearest_terms(i, 3)))
@@ -1158,19 +1216,11 @@ def generate_interactive_wordcloud(freq_data, highlight_words=None, title='', ex
     )
     return fig
 
-
-def render_wordclouds(var_resps):
+def render_wordclouds(var_resps, var_name="open_var"):
     """
-    Updated Word Cloud UI with separate quadrant boxes:
-      - 1: Select how many quadrants (1..4)
-      - 2: For each quadrant, pick one or more categories
-      - 3: EXACT number of words
-      - 4: Choose color scheme for non-highlight
-      - 5: Highlight words
-      - Download CSVs for each quadrant and a combined CSV for all quadrants
+    Renders multiple tabs of wordcloud outputs (Static, Interactive, Bar+WC, Frequencies)
+    and includes the variable name in downloaded filenames.
     """
-    st.markdown("## 🎨 Word Clouds")
-
     # 1) Quadrant layout
     layout_choice = st.selectbox("Number of quadrants", [1, 2, 3, 4], index=0)
 
@@ -1178,7 +1228,7 @@ def render_wordclouds(var_resps):
     groups_available = sorted(list(var_resps.keys()))
     quadrant_selections = {}
     for q_idx in range(layout_choice):
-        quadrant_label = f"Quadrant {chr(65 + q_idx)}"  # e.g. Quadrant A, B...
+        quadrant_label = f"Quadrant {chr(65 + q_idx)}"
         quadrant_selections[quadrant_label] = st.multiselect(
             f"Select categories for {quadrant_label}",
             groups_available,
@@ -1189,7 +1239,10 @@ def render_wordclouds(var_resps):
     exact_words = st.slider("Exact number of words per quadrant", min_value=10, max_value=300, value=50, step=10)
 
     # 4) Color scheme for non-highlight
-    color_schemes = ["viridis", "plasma", "inferno", "magma", "cividis", "winter", "coolwarm", "bone", "terrain", "twilight"]
+    color_schemes = [
+        "viridis", "plasma", "inferno", "magma", "cividis", "winter",
+        "coolwarm", "bone", "terrain", "twilight"
+    ]
     chosen_cmap = st.selectbox("Color Scheme (if no highlights)", color_schemes, index=0)
 
     # 5) Highlight words
@@ -1204,7 +1257,7 @@ def render_wordclouds(var_resps):
             combined_texts.extend(var_resps[cat])
         quadrant_texts[quad_label] = combined_texts
 
-    # If everything is empty, warn and return
+    # Check if there's any content at all
     nonempty_quadrants = any(len(txts) > 0 for txts in quadrant_texts.values())
     if not nonempty_quadrants:
         st.warning("No groups selected or no data to show.")
@@ -1216,12 +1269,26 @@ def render_wordclouds(var_resps):
         freq_ = generate_word_freq(txt_list, exact_words=exact_words)
         quadrant_freqs[quad_label] = freq_
 
-    # TABS
-    tabs = st.tabs(["📸 Static", "🔄 Interactive", "📊 Frequencies"])
+    # Proportions for each quadrant
+    total_responses = sum(len(txts) for txts in quadrant_texts.values())
+    group_proportions = {}
+    for quad_label, txt_list in quadrant_texts.items():
+        group_proportions[quad_label] = len(txt_list) / total_responses if total_responses else 0
 
-    #######################################################
-    # STATIC
-    #######################################################
+    # Prepare combined CSV for frequencies
+    all_quadrants_freq = []
+    for quad_label, freq_dat in quadrant_freqs.items():
+        for w, f_ in freq_dat:
+            all_quadrants_freq.append([quad_label, w, f_])
+    df_all_quadrants_freq = pd.DataFrame(all_quadrants_freq, columns=["Quadrant", "Word", "Frequency"])
+    csv_all_freq = df_all_quadrants_freq.to_csv(index=False).encode('utf-8')
+
+    # Build tabs
+    tabs = st.tabs(["📸 Static", "🔄 Interactive"])
+
+    ###############################################################################
+    # TAB 0: STATIC WORDCLOUD
+    ###############################################################################
     with tabs[0]:
         fig_cols = 2 if layout_choice > 1 else 1
         fig_rows = (layout_choice + 1) // 2 if layout_choice > 2 else (1 if layout_choice < 3 else 2)
@@ -1235,10 +1302,10 @@ def render_wordclouds(var_resps):
             ax_ = fig.add_subplot(gs[row_, col_])
 
             if freq_dat:
-                # Build a WordCloud using highlight or colormap
                 if highlight_set:
+                    # highlight
                     def color_func(word, *args, **kwargs):
-                        return "rgb(68, 57, 131)" if word.lower() in highlight_set else "hsl(0, 0%, 55%)"
+                        return "rgb(68, 57, 131)" if word.lower() in highlight_set else "gray"
                     wc = WordCloud(
                         width=800,
                         height=600,
@@ -1248,9 +1315,10 @@ def render_wordclouds(var_resps):
                         color_func=color_func
                     )
                 else:
-                    import matplotlib.cm as cm
-                    selected_cmap = cm.get_cmap(chosen_cmap)
+                    # colormap
                     random_state = np.random.RandomState(42)
+                    selected_cmap = get_cmap_fixed(chosen_cmap)
+
                     def color_func(word, font_size, position, orientation, random_state=random_state, **kwargs):
                         color_idx = random_state.randint(0, 256)
                         r, g, b, _ = selected_cmap(color_idx / 255.0)
@@ -1264,10 +1332,9 @@ def render_wordclouds(var_resps):
                         color_func=color_func
                     )
 
-                # Rebuild text from frequencies
                 word_list = []
-                for w, f in freq_dat:
-                    word_list.extend([w] * f)
+                for w, f_ in freq_dat:
+                    word_list.extend([w] * f_)
                 joined_text = ' '.join(word_list)
                 wc.generate(joined_text)
 
@@ -1275,64 +1342,43 @@ def render_wordclouds(var_resps):
                 ax_.axis('off')
             else:
                 ax_.text(0.5, 0.5, "No data", ha='center', va='center', fontsize=14)
+
+            # Remove quadrant label from the subplot if you don't want it:
+            # ax_.set_title(quad_label, fontsize=16)
             idx += 1
 
         st.pyplot(fig)
-        # Download PNG
+
+        # Download static wordcloud as PNG, with var_name in filename
         buf = BytesIO()
         fig.savefig(buf, format='png', dpi=300, bbox_inches='tight')
         buf.seek(0)
         st.download_button(
-            "💾 Download PNG",
+            f"💾 Download Static Wordcloud PNG",
             data=buf.getvalue(),
-            file_name="wordcloud_quadrants.png",
+            file_name=f"{var_name}_wordcloud_quadrants_static.png",
             mime="image/png",
             use_container_width=True
         )
         plt.close(fig)
 
-        # Also let user download frequencies used in this static view
-        # Combined Frequencies
-        with st.expander("Download Frequencies (Static View)"):
-            # Combined
-            all_freq_rows = []
-            for quad_label, freq_d in quadrant_freqs.items():
-                for w, f in freq_d:
-                    all_freq_rows.append({'Quadrant': quad_label, 'Word': w, 'Frequency': f})
-            if all_freq_rows:
-                freqdf = pd.DataFrame(all_freq_rows)
-                freq_csv = freqdf.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    "Download All Quadrants CSV",
-                    data=freq_csv,
-                    file_name="wordcloud_all_quadrants_static.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-            # Quadrant by quadrant
-            for quad_label, freq_d in quadrant_freqs.items():
-                st.markdown(f"**{quad_label}**")
-                if freq_d:
-                    df_ = pd.DataFrame(freq_d, columns=['Word', 'Frequency'])
-                    freq_csv = df_.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        f"Download {quad_label} CSV",
-                        data=freq_csv,
-                        file_name=f"wordcloud_{quad_label.replace(' ','_')}_static.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
-                else:
-                    st.write("No data.")
+        # Download associated frequencies as CSV, with var_name
+        st.download_button(
+            label=f"📥 Download Frequencies CSV",
+            data=csv_all_freq,
+            file_name=f"{var_name}_wordcloud_quadrants_frequencies.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
 
-    #######################################################
-    # INTERACTIVE
-    #######################################################
+    ###############################################################################
+    # TAB 1: INTERACTIVE WORDCLOUD
+    ###############################################################################
     with tabs[1]:
         rows_ = (layout_choice + 1) // 2 if layout_choice > 2 else (1 if layout_choice < 3 else 2)
         cols_ = 2 if layout_choice > 1 else 1
 
-        fig = make_subplots(rows=rows_, cols=cols_, subplot_titles=[k for k in quadrant_freqs.keys()])
+        fig_int = make_subplots(rows=rows_, cols=cols_, subplot_titles=None)
         idx = 1
         for quad_label, freq_dat in quadrant_freqs.items():
             row_ = (idx - 1) // cols_ + 1
@@ -1347,102 +1393,322 @@ def render_wordclouds(var_resps):
             )
             if iwc:
                 for trace in iwc.data:
-                    fig.add_trace(trace, row=row_, col=col_)
-                fig.update_xaxes(visible=False, showgrid=False, zeroline=False, row=row_, col=col_)
-                fig.update_yaxes(visible=False, showgrid=False, zeroline=False, row=row_, col=col_)
+                    fig_int.add_trace(trace, row=row_, col=col_)
+                fig_int.update_xaxes(visible=False, showgrid=False, zeroline=False, row=row_, col=col_)
+                fig_int.update_yaxes(visible=False, showgrid=False, zeroline=False, row=row_, col=col_)
 
             idx += 1
 
-        fig.update_layout(
+        fig_int.update_layout(
             width=1000 + 400 * (cols_ - 1),
             height=600 * rows_,
             showlegend=False,
             margin=dict(t=50, b=50, l=50, r=50),
             title="",
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig_int, use_container_width=True)
 
-        # Combined CSV (interactive view)
-        with st.expander("Download Frequencies (Interactive View)"):
-            all_freq_rows = []
-            for quad_label, freq_d in quadrant_freqs.items():
-                for w, f in freq_d:
-                    all_freq_rows.append({'Quadrant': quad_label, 'Word': w, 'Frequency': f})
-            if all_freq_rows:
-                freqdf = pd.DataFrame(all_freq_rows)
-                freq_csv = freqdf.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    "Download All Quadrants CSV",
-                    data=freq_csv,
-                    file_name="wordcloud_all_quadrants_interactive.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
+        # Download as PNG
+        try:
+            buf_i = BytesIO()
+            fig_int.write_image(buf_i, format='png')
+            buf_i.seek(0)
+            st.download_button(
+                f"📥 Download Interactive Wordcloud PNG",
+                data=buf_i.getvalue(),
+                file_name=f"{var_name}_interactive_wordcloud_quadrants.png",
+                mime="image/png",
+                use_container_width=True
+            )
+        except Exception as e:
+            st.warning("Plotly image export requires 'kaleido'. Please install it if you need PNG download.")
 
-            # Download each quadrant's CSV
-            for quad_label, freq_d in quadrant_freqs.items():
-                st.markdown(f"**{quad_label}**")
-                if freq_d:
-                    df_ = pd.DataFrame(freq_d, columns=['Word', 'Frequency'])
-                    freq_csv = df_.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        f"Download {quad_label} CSV",
-                        data=freq_csv,
-                        file_name=f"wordcloud_{quad_label.replace(' ','_')}_interactive.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
-                else:
-                    st.write("No data.")
-
-    #######################################################
-    # FREQUENCIES TABLE
-    #######################################################
-    with tabs[2]:
-        st.markdown("### Frequency Tables")
-        for quad_label, freq_dat in quadrant_freqs.items():
-            st.subheader(quad_label)
-            if freq_dat:
-                df_ = pd.DataFrame(freq_dat, columns=['Word', 'Frequency'])
-                st.dataframe(df_, use_container_width=True)
-            else:
-                st.write("No data.")
-
-        # Combined CSV from the Frequencies Table
-        with st.expander("Download Frequencies (Table View)"):
-            all_freq_rows = []
-            for quad_label, freq_d in quadrant_freqs.items():
-                for w, f in freq_d:
-                    all_freq_rows.append({'Quadrant': quad_label, 'Word': w, 'Frequency': f})
-            if all_freq_rows:
-                freqdf = pd.DataFrame(all_freq_rows)
-                freq_csv = freqdf.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    "Download All Quadrants CSV",
-                    data=freq_csv,
-                    file_name="wordcloud_all_quadrants_table.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-            # Quadrant by quadrant
-            for quad_label, freq_d in quadrant_freqs.items():
-                st.markdown(f"**{quad_label}**")
-                if freq_d:
-                    df_ = pd.DataFrame(freq_d, columns=['Word', 'Frequency'])
-                    freq_csv = df_.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        f"Download {quad_label} CSV",
-                        data=freq_csv,
-                        file_name=f"wordcloud_{quad_label.replace(' ','_')}_table.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
-                else:
-                    st.write("No data.")
+        # Download associated frequencies as CSV
+        st.download_button(
+            label=f"📥 Download Frequencies CSV",
+            data=csv_all_freq,
+            file_name=f"{var_name}_wordcloud_quadrants_frequencies.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
 
 
 ###############################################################################
-# 8) TOPIC DISCOVERY
+# 8) WORD DIVE
+###############################################################################
+def flesch_kincaid_grade_level(text):
+    """
+    Rough, self-contained Flesch-Kincaid grade level calculation.
+    """
+    sents = re.split(r'[.!?]+', text)
+    sents = [s.strip() for s in sents if s.strip()]
+    num_sents = len(sents) if sents else 1
+
+    words = text.split()
+    num_words = len(words)
+    if num_words == 0:
+        return 0.0
+
+    def syllable_count(w):
+        return len(re.findall(r'[aeiou]+', w.lower()))
+
+    total_syllables = sum(syllable_count(w) for w in words)
+    # Flesch-Kincaid formula: 0.39*(words/sentences) + 11.8*(syllables/words) - 15.59
+    return 0.39 * (num_words / num_sents) + 11.8 * (total_syllables / num_words) - 15.59
+
+def render_word_dive(chosen_var, rdict, open_var_options, grouping_columns):
+    """
+    Extended "Word Dive" section analyzing usage of a specific word across:
+      - Multiple grouping variables
+      - Flesch-Kincaid complexity
+      - Common bigrams/trigrams including the focus term
+      - Example responses near the analyses with interactive sampling
+
+    rdict: dictionary of dataframes keyed by "survey id" or similar
+    chosen_var: name of the open-ended variable to analyze
+    open_var_options: dictionary mapping variable names to display text
+    grouping_columns: potential grouping columns the user can pick from
+    """
+
+    st.markdown("## 🏊 Word Dive")
+
+    # User picks the focus term
+    focus_term = st.text_input("Enter the term to examine", "work")
+
+    # Optional grouping column
+    st.markdown("### Choose Grouping Column")
+    grouping_choice = st.selectbox("Group by column", [None, "None"] + grouping_columns, index=0)
+    if grouping_choice in [None, "None"]:
+        grouping_choice = None
+
+    # Gather texts by group
+    group_texts = defaultdict(list)
+    # We might also keep track of total responses by group (for proportion)
+    group_counts = defaultdict(int)
+
+    for sid, df in rdict.items():
+        if chosen_var not in df.columns:
+            continue
+        sub_df = df.dropna(subset=[chosen_var])
+        if grouping_choice and (grouping_choice in sub_df.columns):
+            for grp_val, gdf in sub_df.groupby(grouping_choice):
+                valid_texts = gdf[chosen_var].dropna().astype(str).tolist()
+                label_name = f"{sid}_{grp_val}"
+                group_texts[label_name].extend(valid_texts)
+                group_counts[label_name] += len(valid_texts)
+        else:
+            # no group chosen, treat the entire survey as a single "group"
+            group_texts[sid].extend(sub_df[chosen_var].dropna().astype(str).tolist())
+            group_counts[sid] += len(sub_df[chosen_var].dropna())
+
+    # Prepare data frames for analysis
+    # We'll build a table with columns: Group, CountContainsFocus, ProportionContainsFocus,
+    # Average FK, plus distribution data for F-K.
+    # Also store the text so we can do bigram/trigram analysis and random sampling.
+    results = []
+    distribution_data = []  # For box/violin plots of F-K
+
+    for grp, txts in group_texts.items():
+        # How many contain the focus term?
+        total_in_group = len(txts)
+        if total_in_group == 0:
+            # no responses
+            results.append({
+                "Group": grp,
+                "Total_Responses": 0,
+                "Num_Responses_Containing_Term": 0,
+                "Proportion_Containing_Term": 0.0,
+                "Avg_FK_Grade": None
+            })
+            continue
+
+        # Filter only those responses containing the focus term
+        focus_responses = [t for t in txts if focus_term.lower() in t.lower()]
+        num_contains = len(focus_responses)
+        proportion_contains = num_contains / total_in_group
+
+        if focus_responses:
+            fk_scores = []
+            for r_ in focus_responses:
+                fk_val = flesch_kincaid_grade_level(r_)
+                fk_scores.append(fk_val)
+                # For distribution chart
+                distribution_data.append({
+                    "Group": grp,
+                    "FK_Grade": fk_val
+                })
+            avg_fk = sum(fk_scores) / len(fk_scores)
+        else:
+            avg_fk = None
+
+        results.append({
+            "Group": grp,
+            "Total_Responses": total_in_group,
+            "Num_Responses_Containing_Term": num_contains,
+            "Proportion_Containing_Term": round(proportion_contains, 3),
+            "Avg_FK_Grade": round(avg_fk, 2) if avg_fk is not None else None
+        })
+
+    df_summary = pd.DataFrame(results)
+
+    # Build the layout with tabs for different analyses:
+    dive_tabs = st.tabs(["Focus Term Prevalence",
+                         "F-K Complexity & Distribution",
+                         "Bigrams/Trigrams"])
+
+    # =============== TAB 1: Focus Term Prevalence ====================
+    with dive_tabs[0]:
+        st.markdown("### Focus Term Prevalence by Group")
+        st.dataframe(df_summary, use_container_width=True)
+
+        # Plotly bar chart: Number of responses containing the term (or Proportion)
+        st.markdown("#### Bar Chart: Proportion of Responses Containing the Term")
+        if not df_summary.empty:
+            fig_prop = px.bar(
+                df_summary,
+                x="Group",
+                y="Proportion_Containing_Term",
+                hover_data=["Num_Responses_Containing_Term", "Total_Responses"],
+                title=f"Proportion of Responses Containing '{focus_term}' by Group",
+                color="Proportion_Containing_Term",
+                color_continuous_scale="Blues",
+            )
+            fig_prop.update_layout(
+                xaxis_title="Group",
+                yaxis_title="Proportion Containing the Term",
+                coloraxis_showscale=False,
+                hovermode="x unified",
+                margin=dict(l=40, r=40, t=60, b=40)
+            )
+            st.plotly_chart(fig_prop, use_container_width=True)
+
+            # Another bar chart: raw counts
+            st.markdown("#### Bar Chart: Number of Responses Containing the Term")
+            fig_count = px.bar(
+                df_summary,
+                x="Group",
+                y="Num_Responses_Containing_Term",
+                hover_data=["Proportion_Containing_Term", "Total_Responses"],
+                title=f"Count of Responses Containing '{focus_term}' by Group",
+                color="Num_Responses_Containing_Term",
+                color_continuous_scale="Teal",
+            )
+            fig_count.update_layout(
+                xaxis_title="Group",
+                yaxis_title="Count Containing the Term",
+                coloraxis_showscale=False,
+                hovermode="x unified",
+                margin=dict(l=40, r=40, t=60, b=40)
+            )
+            st.plotly_chart(fig_count, use_container_width=True)
+        else:
+            st.write("No data found for this variable or no responses in rdict.")
+
+    # =============== TAB 2: F-K Complexity & Distribution ============
+    with dive_tabs[1]:
+        st.markdown("### Flesch-Kincaid Complexity by Group")
+
+        # Show the summary
+        st.dataframe(df_summary[["Group", "Avg_FK_Grade",
+                                 "Num_Responses_Containing_Term"]].sort_values(
+            by="Avg_FK_Grade", ascending=False
+        ), use_container_width=True)
+
+        # Build distribution chart (box plot or violin) if we have data
+        dist_df = pd.DataFrame(distribution_data)
+        if not dist_df.empty:
+            # Box plot
+            st.markdown("#### Box Plot of F-K Grade Levels (Responses Containing the Term)")
+            fig_box = px.box(
+                dist_df,
+                x="Group",
+                y="FK_Grade",
+                color="Group",
+                title="F-K Grade Distribution by Group (Focus Term Responses)",
+            )
+            fig_box.update_layout(
+                showlegend=False,
+                xaxis_title="Group",
+                yaxis_title="F-K Grade Level",
+                margin=dict(l=40, r=40, t=60, b=40),
+            )
+            st.plotly_chart(fig_box, use_container_width=True)
+
+            # Violin plot
+            st.markdown("#### Violin Plot of F-K Grade Levels")
+            fig_violin = px.violin(
+                dist_df,
+                x="Group",
+                y="FK_Grade",
+                color="Group",
+                box=True,
+                points="all",
+                title="F-K Grade Distribution by Group (Focus Term Responses) - Violin Plot",
+            )
+            fig_violin.update_layout(
+                showlegend=False,
+                xaxis_title="Group",
+                yaxis_title="F-K Grade Level",
+                margin=dict(l=40, r=40, t=60, b=40),
+            )
+            st.plotly_chart(fig_violin, use_container_width=True)
+        else:
+            st.write("No responses contained the focus term, so no F-K distributions to show.")
+
+    # =============== TAB 3: Bigrams/Trigrams =========================
+    with dive_tabs[2]:
+        st.markdown("### Most Common Bigrams/Trigrams Containing the Focus Term")
+        top_n = st.slider("How many top bigrams/trigrams to show?", 5, 30, 10)
+
+        # We'll also make an optional bar chart for these.
+        for grp_key, txts in group_texts.items():
+            st.subheader(f"Group: {grp_key}")
+            relevant = [t for t in txts if focus_term.lower() in t.lower()]
+            if not relevant:
+                st.write("No responses contain the focus term.")
+                continue
+
+            # For the CountVectorizer, we can handle custom stopwords
+            # but let's keep it simple referencing st.session_state if needed
+            custom_stops = list(st.session_state.custom_stopwords) if "custom_stopwords" in st.session_state else None
+            vec = CountVectorizer(ngram_range=(2, 3), stop_words=custom_stops)
+            X = vec.fit_transform(relevant)
+            freqs = X.sum(axis=0).A1
+            vocab = vec.get_feature_names_out()
+
+            focus_ngram_counts = []
+            for i, v in enumerate(vocab):
+                if focus_term.lower() in v:
+                    focus_ngram_counts.append((v, freqs[i]))
+
+            if not focus_ngram_counts:
+                st.write("No bigrams/trigrams containing the focus term.")
+                continue
+
+            focus_ngram_counts.sort(key=lambda x: x[1], reverse=True)
+            top_ngrams = focus_ngram_counts[:top_n]
+            df_ngrams = pd.DataFrame(top_ngrams, columns=["Ngram", "Frequency"])
+            st.dataframe(df_ngrams, use_container_width=True)
+
+            # Optional bar chart
+            fig_ngrams = px.bar(
+                df_ngrams,
+                x="Ngram",
+                y="Frequency",
+                title=f"Top Bigrams/Trigrams (containing '{focus_term}') in {grp_key}",
+                color="Frequency",
+                color_continuous_scale="Reds",
+            )
+            fig_ngrams.update_layout(
+                xaxis_title="N-gram",
+                yaxis_title="Frequency",
+                coloraxis_showscale=False,
+                margin=dict(l=40, r=40, t=60, b=40)
+            )
+            st.plotly_chart(fig_ngrams, use_container_width=True)
+
+###############################################################################
+# 9) TOPIC DISCOVERY
 ###############################################################################
 def create_topic_distance_map(topic_model, processed_texts):
     """Create interactive topic distance visualization."""
@@ -1870,37 +2136,76 @@ def show_example_responses(df,
         tab_index += 1
 
 ###############################################################################
-# 9) SENTIMENT ANALYSES
+# 10) SENTIMENT ANALYSES
 ###############################################################################
-def analyze_sentiment(text):
-    """
-    Analyze sentiment of text using VADER.
-    Returns compound score and sentiment category.
-    """
-    analyzer = SentimentIntensityAnalyzer()
-    scores = analyzer.polarity_scores(text)
-
-    # Categorize sentiment based on compound score
-    if scores['compound'] >= 0.05:
-        category = 'Positive'
-    elif scores['compound'] <= -0.05:
-        category = 'Negative'
-    else:
-        category = 'Neutral'
-
-    return {
-        'compound': scores['compound'],
-        'pos': scores['pos'],
-        'neg': scores['neg'],
-        'neu': scores['neu'],
-        'category': category
-    }
-
 def analyze_group_sentiment(texts_by_group):
     """
-    Analyze sentiment for each group's texts.
-    Returns sentiment statistics by group.
+    Analyzes sentiment for each group's texts using VADER
+    and returns a dict like:
+    {
+      group_name: {
+         'total': int,
+         'positive': int,
+         'negative': int,
+         'neutral': int,
+         'scores': [list_of_compound_scores],
+         'avg_compound': float,
+         'pos_pct': float,
+         'neg_pct': float,
+         'neu_pct': float
+      },
+      ...
+    }
     """
+    analyzer = SentimentIntensityAnalyzer()
+    results = defaultdict(lambda: {
+        'total': 0,
+        'positive': 0,
+        'negative': 0,
+        'neutral': 0,
+        'scores': [],
+        'avg_compound': 0.0,
+        'pos_pct': 0.0,
+        'neg_pct': 0.0,
+        'neu_pct': 0.0
+    })
+
+    for group_name, texts in texts_by_group.items():
+        valid_texts = [t for t in texts if isinstance(t, str) and t.strip()]
+        for txt in valid_texts:
+            vs = analyzer.polarity_scores(txt)
+            results[group_name]['total'] += 1
+            results[group_name]['scores'].append(vs['compound'])
+
+            if vs['compound'] >= 0.05:
+                results[group_name]['positive'] += 1
+            elif vs['compound'] <= -0.05:
+                results[group_name]['negative'] += 1
+            else:
+                results[group_name]['neutral'] += 1
+
+        # post-calc
+        total_n = results[group_name]['total']
+        if total_n > 0:
+            comp_list = results[group_name]['scores']
+            results[group_name]['avg_compound'] = sum(comp_list) / total_n
+            results[group_name]['pos_pct'] = 100.0 * results[group_name]['positive'] / total_n
+            results[group_name]['neg_pct'] = 100.0 * results[group_name]['negative'] / total_n
+            results[group_name]['neu_pct'] = 100.0 * results[group_name]['neutral'] / total_n
+
+    return dict(results)
+
+def analyze_group_sentiment(texts_by_group):
+    import logging
+    from collections import defaultdict
+    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+    import pandas as pd
+
+    # If the dict is empty (meaning no group_by selected, or no data),
+    # fall back to a single group "All" with no texts. (At least it won't crash.)
+    if not texts_by_group:
+        texts_by_group = {"All": []}
+
     sentiment_stats = defaultdict(lambda: {
         'total': 0,
         'positive': 0,
@@ -1910,68 +2215,58 @@ def analyze_group_sentiment(texts_by_group):
         'scores': []
     })
 
+    analyzer = SentimentIntensityAnalyzer()
+
     for group, texts in texts_by_group.items():
-        for text in texts:
-            if pd.isna(text) or not str(text).strip():
-                continue
+        valid_texts = [str(t) for t in texts if isinstance(t, str) and t.strip()]
+        if not valid_texts:
+            continue
 
-            sentiment = analyze_sentiment(str(text))
-            sentiment_stats[group]['total'] += 1
-            sentiment_stats[group]['scores'].append(sentiment['compound'])
+        for text in valid_texts:
+            try:
+                scores = analyzer.polarity_scores(text)
+                sentiment_stats[group]['total'] += 1
+                sentiment_stats[group]['scores'].append(scores['compound'])
 
-            if sentiment['category'] == 'Positive':
-                sentiment_stats[group]['positive'] += 1
-            elif sentiment['category'] == 'Negative':
-                sentiment_stats[group]['negative'] += 1
-            else:
-                sentiment_stats[group]['neutral'] += 1
+                if scores['compound'] >= 0.05:
+                    sentiment_stats[group]['positive'] += 1
+                elif scores['compound'] <= -0.05:
+                    sentiment_stats[group]['negative'] += 1
+                else:
+                    sentiment_stats[group]['neutral'] += 1
+            except Exception as e:
+                logging.error(f"Error analyzing text: {str(e)}")
 
-    # Calculate averages and percentages
-    for group in sentiment_stats:
-        total = sentiment_stats[group]['total']
-        if total > 0:
-            sentiment_stats[group]['avg_compound'] = sum(sentiment_stats[group]['scores']) / total
-            sentiment_stats[group]['pos_pct'] = (sentiment_stats[group]['positive'] / total) * 100
-            sentiment_stats[group]['neg_pct'] = (sentiment_stats[group]['negative'] / total) * 100
-            sentiment_stats[group]['neu_pct'] = (sentiment_stats[group]['neutral'] / total) * 100
+        # Calculate percentages/averages
+        c = sentiment_stats[group]['total']
+        if c > 0:
+            sentiment_stats[group]['avg_compound'] = sum(sentiment_stats[group]['scores']) / c
+            sentiment_stats[group]['pos_pct'] = (sentiment_stats[group]['positive'] / c) * 100
+            sentiment_stats[group]['neg_pct'] = (sentiment_stats[group]['negative'] / c) * 100
+            sentiment_stats[group]['neu_pct'] = (sentiment_stats[group]['neutral'] / c) * 100
 
-    return sentiment_stats
+    return dict(sentiment_stats)
 
-def create_sentiment_radar(sentiment_summary):
+def sentiment_radar_chart(sentiment_summary):
     """
-    Build a radar chart using a summary list of dicts that looks like:
-      [
-        {
-          'Group': ...,
-          'Total': ...,
-          'Positive%': ...,
-          'Neutral%': ...,
-          'Negative%': ...,
-          'AvgCompound': ...
-        },
-        ...
-      ]
-    We'll map:
-      Positive% -> radius
-      Neutral%  -> radius
-      Negative% -> radius
-      AvgCompound -> scaled from -1..1 to 0..100 for visualization.
+    Build a simple Plotly radar chart from a list of dictionaries like:
+    [
+      {'Group': 'All', 'Positive%': 45, 'Negative%': 30, 'Neutral%': 25, 'AvgCompound': 0.15},
+      ...
+    ]
     """
-    categories = ["Positive%", "Neutral%", "Negative%", "Compound(Scaled)"]
+    categories = ["Positive%", "Neutral%", "Negative%", "CompoundScaled"]
 
     fig = go.Figure()
     for row in sentiment_summary:
         grp = row["Group"]
-        try:
-            pos_val = float(row["Positive%"])
-            neu_val = float(row["Neutral%"])
-            neg_val = float(row["Negative%"])
-            # Convert compound (-1..1) into 0..100
-            avg_comp = float(row["AvgCompound"])
-            comp_scaled = (avg_comp + 1.0) * 50.0
-        except:
-            # If parsing fails, skip
-            continue
+        # Convert to float
+        pos_val = float(row["Positive%"])
+        neu_val = float(row["Neutral%"])
+        neg_val = float(row["Negative%"])
+        # Scale compound from -1..1 => 0..100
+        comp_val = float(row["AvgCompound"])
+        comp_scaled = (comp_val + 1.0) * 50.0  # e.g. -1 => 0, 1 => 100
 
         fig.add_trace(go.Scatterpolar(
             r=[pos_val, neu_val, neg_val, comp_scaled],
@@ -1982,12 +2277,9 @@ def create_sentiment_radar(sentiment_summary):
 
     fig.update_layout(
         title="Sentiment Radar Chart",
-        polar=dict(
-            radialaxis=dict(visible=True, range=[0,100])
-        ),
+        polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
         showlegend=True,
-        width=700,
-        height=600
+        width=700, height=600
     )
     return fig
 
@@ -2099,7 +2391,7 @@ def analyze_group_sentiment(texts_by_group):
         return {}
 
 ###############################################################################
-# 10) THEMATIC EVOLUTION
+# 11) THEMATIC EVOLUTION
 ###############################################################################
 def calculate_theme_evolution(texts_by_group, num_themes=5, min_freq=3):
     """Calculate the evolution of themes across groups."""
@@ -2311,7 +2603,7 @@ def create_theme_waterfall(evolution_data):
     return fig
 
 ###############################################################################
-# 11) APP LAYOUT (No Nested Expanders, Improved Aesthetics & Error Locations)
+# 12) APP LAYOUT
 ###############################################################################
 
 st.markdown("""
@@ -2364,11 +2656,13 @@ with st.sidebar:
         grp_cols = st.session_state.data['grouping_columns']
 
         # Choose type of analysis
+        st.markdown("---")
         st.markdown("**Choose Analysis**")
         analyses = [
             "Open Coding",
             "Word Cloud",
             "Word Analysis",
+            "Word Dive",
             "Topic Discovery",
             "Sentiment Analysis",
             "Theme Evolution"
@@ -2383,6 +2677,7 @@ with st.sidebar:
             index=selected_index
         )
 
+        st.markdown("---")
         # Choose variable
         if var_opts:
             st.subheader("Variable to analyze")
@@ -2394,9 +2689,11 @@ with st.sidebar:
         else:
             chosen_var = None
 
+        st.markdown("---")
+
         # Group by
         if grp_cols:
-            st.subheader("Group By (optional)")
+            st.subheader("Group By")
             chosen_grp = st.selectbox("Group responses by", [None, "None"] + grp_cols, index=1)
             if chosen_grp in [None, "None"]:
                 chosen_grp = None
@@ -2408,8 +2705,12 @@ with st.sidebar:
         # Stopwords manager
         render_stopwords_management()
 
+        st.markdown("---")
+
         # Synonym manager
         render_synonym_groups_management()
+
+        st.markdown("---")
 
         # Refresh button
         if st.button("🔄 Refresh All"):
@@ -2434,6 +2735,18 @@ if st.session_state.file_processed and chosen_var:
         st.warning("No responses found for this variable. Please verify your selection.")
         st.stop()
 
+    st.markdown(f"""
+    <div style="border: 2px solid #4CAF50; border-radius: 10px; padding: 20px; 
+                background-color: #f8f9fa; margin: 10px 0;">
+        <div style="color: #2E7D32; font-size: 1.2em; margin-bottom: 10px; font-weight: bold;">
+            <strong>Primary Question</strong>
+        </div>
+        <div style="color: #1a1a1a; font-size: 1.1em; line-height: 1.5; font-weight: bold;">
+            <strong>{open_var_options.get(chosen_var, "No question text")}</strong>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
     # Determine which section of the dashboard to show
     if st.session_state.selected_analysis == "Open Coding":
         st.markdown("## Open Coding")
@@ -2441,36 +2754,10 @@ if st.session_state.file_processed and chosen_var:
 
     elif st.session_state.selected_analysis == "Word Cloud":
         st.markdown("## 🎨 Word Cloud")
-        st.markdown(f"""
-        <div style="border: 2px solid #4CAF50; border-radius: 10px; padding: 20px; 
-                    background-color: #f8f9fa; margin: 10px 0;">
-            <div style="color: #2E7D32; font-size: 1.2em; margin-bottom: 10px; 
-                        font-weight: bold;">
-                Primary Question
-            </div>
-            <div style="color: #1a1a1a; font-size: 1.1em; line-height: 1.5; 
-                        font-weight: 600;">
-                {open_var_options.get(chosen_var, "No question text")}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
         render_wordclouds(var_resps)
 
     elif st.session_state.selected_analysis == "Word Analysis":
         st.markdown("## 📊 Word Analysis")
-        st.markdown(f"""
-        <div style="border: 2px solid #4CAF50; border-radius: 10px; padding: 20px; 
-                    background-color: #f8f9fa; margin: 10px 0;">
-            <div style="color: #2E7D32; font-size: 1.2em; margin-bottom: 10px; 
-                        font-weight: bold;">
-                Primary Question
-            </div>
-            <div style="color: #1a1a1a; font-size: 1.1em; line-height: 1.5; 
-                        font-weight: 600;">
-                {open_var_options.get(chosen_var, "No question text")}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
 
         # Each group
         from sklearn.feature_extraction.text import CountVectorizer
@@ -2581,23 +2868,12 @@ if st.session_state.file_processed and chosen_var:
                 pair_df = pd.DataFrame(pairs_).sort_values("Co-occurrences", ascending=False).head(15)
                 st.dataframe(pair_df, use_container_width=True)
 
+    elif st.session_state.selected_analysis == "Word Dive":
+        render_word_dive(chosen_var, rdict, open_var_options, grouping_columns)
+
     elif st.session_state.selected_analysis == "Topic Discovery":
 
         st.markdown("## 🔍 Topic Discovery")
-
-        st.markdown(f"""
-        <div style="border: 2px solid #4CAF50; border-radius: 10px; padding: 20px; 
-                    background-color: #f8f9fa; margin: 10px 0;">
-            <div style="color: #2E7D32; font-size: 1.2em; margin-bottom: 10px; 
-                        font-weight: bold;">
-                Primary Question
-            </div>
-            <div style="color: #1a1a1a; font-size: 1.1em; line-height: 1.5; 
-                        font-weight: 600;">
-                {open_var_options.get(chosen_var, "No question text")}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
 
         # ------------------------------------------------------------
 
@@ -2721,105 +2997,115 @@ if st.session_state.file_processed and chosen_var:
 
         st.markdown("## ❤️ Sentiment Analysis")
 
-        if not chosen_grp:
+        # If no group is chosen, var_resps will have a single key "All" with all texts.
+        # If a group is chosen, var_resps will have separate keys for each group.
 
-            st.warning("Please select a 'Group By' variable for sentiment comparison.")
+        from collections import defaultdict
+        from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
+        # Initialize analyzer
+        analyzer = SentimentIntensityAnalyzer()
+
+        # We store sentiment counts & scores per group
+        results_dict = defaultdict(lambda: {
+            'count': 0,
+            'pos': 0,
+            'neg': 0,
+            'neu': 0,
+            'scores': []
+        })
+
+        # Go through each group key in var_resps (could be just 'All' if no group is selected)
+        for group_key, texts_list in var_resps.items():
+            for txt in texts_list:
+                if not isinstance(txt, str) or not txt.strip():
+                    continue
+                sc = analyzer.polarity_scores(txt)
+                results_dict[group_key]['count'] += 1
+                results_dict[group_key]['scores'].append(sc['compound'])
+
+                if sc['compound'] >= 0.05:
+                    results_dict[group_key]['pos'] += 1
+                elif sc['compound'] <= -0.05:
+                    results_dict[group_key]['neg'] += 1
+                else:
+                    results_dict[group_key]['neu'] += 1
+
+        # Build summary rows for table and chart
+        sum_rows = []
+        for grp_key, stats_ in results_dict.items():
+            c_ = stats_['count']
+            if c_ > 0:
+                avg_comp = sum(stats_['scores']) / c_
+                pos_pct = (stats_['pos'] / c_) * 100
+                neg_pct = (stats_['neg'] / c_) * 100
+                neu_pct = (stats_['neu'] / c_) * 100
+
+                sum_rows.append({
+                    'Group': grp_key,
+                    'Total': c_,
+                    'Positive%': f"{pos_pct:.1f}",
+                    'Neutral%': f"{neu_pct:.1f}",
+                    'Negative%': f"{neg_pct:.1f}",
+                    'AvgCompound': f"{avg_comp:.3f}"
+                })
+
+        if not sum_rows:
+            st.warning("No sentiment data found for this variable.")
         else:
+            # Display summary table
+            df_summary = pd.DataFrame(sum_rows)
+            st.dataframe(df_summary, use_container_width=True)
 
-            analyzer = SentimentIntensityAnalyzer()
+            # ===== 1) Build a Radar Chart (Positive%, Neutral%, Negative%, CompoundScaled) =====
+            # We'll scale compound from -1..1 => 0..100 so it fits on the same radar as the percentages
+            categories = ["Positive%", "Neutral%", "Negative%", "CompoundScaled"]
 
-            results_dict = defaultdict(lambda: {'count': 0, 'pos': 0, 'neg': 0, 'neu': 0, 'scores': []})
+            radar_fig = go.Figure()
+            for row in sum_rows:
+                grp = row["Group"]
+                pos_val = float(row["Positive%"])
+                neu_val = float(row["Neutral%"])
+                neg_val = float(row["Negative%"])
+                comp_val = float(row["AvgCompound"])
+                comp_scaled = (comp_val + 1.0) * 50.0  # e.g., -1 => 0, 1 => 100
 
-            for key_, texts_ in var_resps.items():
+                radar_fig.add_trace(go.Scatterpolar(
+                    r=[pos_val, neu_val, neg_val, comp_scaled],
+                    theta=categories,
+                    fill='toself',
+                    name=str(grp)
+                ))
 
-                for txt_ in texts_:
+            radar_fig.update_layout(
+                title="Sentiment Radar Chart",
+                polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+                showlegend=True,
+                width=700,
+                height=600
+            )
+            st.plotly_chart(radar_fig, use_container_width=True)
 
-                    if not isinstance(txt_, str) or not txt_.strip():
-                        continue
+            # ===== 2) Violin Plot of Compound Distributions =====
+            # Flatten out each group's compound scores
+            all_points = []
+            for grp_key, stats_ in results_dict.items():
+                for cval in stats_['scores']:
+                    all_points.append({"Group": grp_key, "Compound": cval})
 
-                    sc = analyzer.polarity_scores(txt_)
-
-                    results_dict[key_]['count'] += 1
-
-                    results_dict[key_]['scores'].append(sc['compound'])
-
-                    if sc['compound'] >= 0.05:
-
-                        results_dict[key_]['pos'] += 1
-
-                    elif sc['compound'] <= -0.05:
-
-                        results_dict[key_]['neg'] += 1
-
-                    else:
-
-                        results_dict[key_]['neu'] += 1
-
-            # Build summary rows
-
-            sum_rows = []
-
-            for gkey, stats_ in results_dict.items():
-
-                c_ = stats_['count']
-
-                if c_ > 0:
-                    avg_c = np.mean(stats_['scores'])
-
-                    p_ = (stats_['pos'] / c_) * 100
-
-                    n_ = (stats_['neg'] / c_) * 100
-
-                    u_ = (stats_['neu'] / c_) * 100
-
-                    sum_rows.append({
-
-                        'Group': gkey,
-
-                        'Total': c_,
-
-                        'Positive%': f"{p_:.1f}",
-
-                        'Neutral%': f"{u_:.1f}",
-
-                        'Negative%': f"{n_:.1f}",
-
-                        'AvgCompound': f"{avg_c:.3f}"
-
-                    })
-
-            if not sum_rows:
-
-                st.warning("No sentiment data found.")
-
+            if all_points:
+                df_vio = pd.DataFrame(all_points)
+                fig_violin = px.violin(
+                    df_vio,
+                    x='Group',
+                    y='Compound',
+                    box=True,
+                    points='all',
+                    title='Sentiment Compound Score Distribution'
+                )
+                st.plotly_chart(fig_violin, use_container_width=True)
             else:
-
-                # 1) Radar Chart FIRST
-
-                radar_fig = create_sentiment_radar(sum_rows)
-
-                st.plotly_chart(radar_fig, use_container_width=True)
-
-                # 2) Violin / Distribution
-
-                points_data = []
-
-                for grp_data, stats_ in results_dict.items():
-
-                    for val_ in stats_['scores']:
-                        points_data.append({'Group': grp_data, 'Compound': val_})
-
-                if points_data:
-                    df_vio = pd.DataFrame(points_data)
-
-                    fig_vio = px.violin(df_vio, x='Group', y='Compound', box=True, points='all')
-
-                    st.plotly_chart(fig_vio, use_container_width=True)
-
-                # 3) Summaries Table
-
-                st.dataframe(pd.DataFrame(sum_rows), use_container_width=True)
+                st.write("No data to display in violin plot.")
 
     elif st.session_state.selected_analysis == "Theme Evolution":
 

@@ -1,12 +1,13 @@
-id,variable,group
+panelistid,variable,group
+,abilities_open,Unassigned
 12593346,abilities_open,Unassigned
 12554604,abilities_open,Unassigned
-12524924,abilities_open,Test
+12524924,abilities_open,Unassigned
 12554141,abilities_open,Unassigned
 12600902,abilities_open,Unassigned
-12523408,abilities_open,Test
-12523544,abilities_open,Test
-12524246,abilities_open,Test
+12523408,abilities_open,Helping Others
+12523544,abilities_open,Unassigned
+12524246,abilities_open,Unassigned
 12525199,abilities_open,Unassigned
 12525401,abilities_open,Unassigned
 12525419,abilities_open,Unassigned
