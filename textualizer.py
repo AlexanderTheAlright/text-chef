@@ -1080,7 +1080,7 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
         if ok:
             st.session_state["sample_seed"] = int(time.time())
             st.success("All coding saved. Shuffled a new set of samples.")
-            st.experimental_rerun()
+            st.rerun()
         else:
             st.error("Error saving coding.")
 
