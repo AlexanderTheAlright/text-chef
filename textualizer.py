@@ -680,45 +680,50 @@ def initialize_coding_state():
 
 def update_coded_assignments(variable, df_updated, final_df):
     """
-    Called after user clicks "Save Changes".
-    We pass in df_updated (the return from st.data_editor) so we definitely have
-    the user's edits. We then store them in st.session_state.open_coding_assignments
-    using (id, variable). Also updates final_df accordingly, then saves to disk.
+    Called after user clicks Save button or Save-and-Shuffle button.
+    We push changes from df_updated into st.session_state, then save to disk.
+    Returns True on success, False on error.
     """
-
-    # If user made no changes at all, df_updated could be identical to final_df
-    # But let's always accept it in case there's subtle changes:
     if df_updated.empty:
+        # No data in the updated table. We can either skip or set a message.
         st.warning("No data in the updated table. Nothing to save.")
-        return
+        return True  # or return False; up to you, but let's say True
 
     # 1) Update the assignments dictionary
     for i, row in df_updated.iterrows():
-        id = str(row.get("id", "")) or str(row.get("id", ""))
+        row_id = str(row.get("id", ""))
         new_grp = row.get("coded_group", "Unassigned")
-        dict_key = (id, variable)
+        dict_key = (row_id, variable)
         st.session_state.open_coding_assignments[dict_key] = new_grp
 
     # 2) Reflect changes back in final_df
     for idx_ in final_df.index:
         row_ = final_df.loc[idx_]
-        id_ = str(row_.get("id", "")) or str(row_.get("id", ""))
-        dict_key = (id_, variable)
+        row_id_ = str(row_.get("id", ""))
+        dict_key = (row_id_, variable)
         assigned = st.session_state.open_coding_assignments.get(dict_key, "Unassigned")
         final_df.at[idx_, "coded_group"] = assigned
 
         if assigned != "Unassigned":
-            gobj = next((g for g in st.session_state.open_coding_groups if g["name"] == assigned), None)
-            final_df.at[idx_, "group_description"] = gobj["desc"] if gobj else ""
+            gobj = next((g for g in st.session_state.open_coding_groups
+                         if g["name"] == assigned),
+                        None)
+            final_df.at[idx_, "group_description"] = (gobj["desc"] if gobj else "")
         else:
             final_df.at[idx_, "group_description"] = ""
 
-    # 3) Save
-    saved = save_coding_state()
-    if saved:
-        st.success("Changes were saved successfully.")
-    else:
-        st.error("Error saving changes.")
+    # 3) Actually save
+    try:
+        saved = save_coding_state()
+        if saved:
+            # Just return True. We won't print success here, to avoid double messages
+            return True
+        else:
+            return False
+    except Exception as e:
+        st.error(f"Error saving coding: {e}")
+        return False
+
         
 def render_open_coding_interface(variable, responses_dict, open_var_options, grouping_columns):
     initialize_coding_state()
@@ -993,7 +998,7 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
 
     # =================== SAVE CHANGES BUTTON ===================
     if st.button("💾 Save Changes"):
-        update_coded_assignments(variable, df_updated, final_df)  # Pass df_updated directly!
+        ok = update_coded_assignments(variable, df_updated, final_df)
 
         # ============== OPTIONAL EXPORTS ==============
         st.markdown("#### 📤 Export")
@@ -1146,10 +1151,10 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
 
     # SINGLE button that both saves changes and reshuffles:
     if st.button("🎲 Save and Shuffle"):
-        if update_coded_assignments(variable, df_updated, final_df):
-            # Change the seed so next run we see fresh random samples
+        ok = update_coded_assignments(variable, df_updated, final_df)
+        if ok:
             st.session_state["sample_seed"] = int(time.time())
-            st.success("All coding saved. New random samples selected.")
+            st.success("All coding saved. Shuffled a new set of samples.")
             st.experimental_rerun()
         else:
             st.error("Error saving coding.")
