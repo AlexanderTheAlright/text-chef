@@ -999,6 +999,8 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
     # =================== SAVE CHANGES BUTTON ===================
     if st.button("💾 Save Changes"):
         ok = update_coded_assignments(variable, df_updated, final_df)
+        if ok:
+            st.success("All coding saved.")
 
         # ============== OPTIONAL EXPORTS ==============
         st.markdown("#### 📤 Export")
@@ -1155,7 +1157,7 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
         if ok:
             st.session_state["sample_seed"] = int(time.time())
             st.success("All coding saved. Shuffled a new set of samples.")
-            st.experimental_rerun()
+            st.rerun()
         else:
             st.error("Error saving coding.")
 
