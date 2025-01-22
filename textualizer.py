@@ -1393,22 +1393,6 @@ def render_wordclouds(var_resps, var_name="open_var"):
         )
         st.plotly_chart(fig_int, use_container_width=True)
 
-        # Download as PNG
-        try:
-            buf_i = BytesIO()
-            fig_int.write_image(buf_i, format='png')
-            buf_i.seek(0)
-            st.download_button(
-                f"📥 Download Interactive Wordcloud PNG",
-                data=buf_i.getvalue(),
-                file_name=f"{var_name}_interactive_wordcloud_quadrants.png",
-                mime="image/png",
-                use_container_width=True,
-                key="interactive_png_download"
-            )
-        except Exception as e:
-            st.warning("Plotly image export requires 'kaleido'. Please install it if you need PNG download.")
-
         # Download associated frequencies as CSV
         st.download_button(
             label=f"📥 Download Frequencies CSV",
