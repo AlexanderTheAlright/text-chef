@@ -1147,7 +1147,7 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
                 st.session_state.open_coding_assignments[dict_key] = new_sel
 
     if st.button("💾 Save All Coding"):
-        if save_coding_state():
+        if update_coded_assignments(variable, df_updated, final_df):
             st.success("All coding saved successfully.")
         else:
             st.error("Error saving coding.")
