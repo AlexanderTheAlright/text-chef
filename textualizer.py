@@ -29,6 +29,7 @@ from sklearn.feature_extraction.text import CountVectorizer
 from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+from PIL import Image
 
 
 matplotlib.use('Agg')  # For headless environments
@@ -1113,6 +1114,7 @@ def generate_word_freq(texts, exact_words=200):
     most_common = freq_counter.most_common(exact_words)
     return most_common
 
+
 def generate_interactive_wordcloud(freq_data, highlight_words=None, title='', exact_words=200, colormap='viridis'):
     """
     Returns a Plotly figure (scatter-based wordcloud).
@@ -1130,7 +1132,7 @@ def generate_interactive_wordcloud(freq_data, highlight_words=None, title='', ex
     sizes = [20 + (f / max_f) * 60 for f in freqs]
 
     import numpy as np
-    golden_ratio = (1 + 5**0.5) / 2
+    golden_ratio = (1 + 5 ** 0.5) / 2
     positions = []
     for i, f_val in enumerate(freqs):
         r = (1 - f_val / max_f) * 200
@@ -1144,7 +1146,7 @@ def generate_interactive_wordcloud(freq_data, highlight_words=None, title='', ex
         dists = []
         for j, (xx, yy) in enumerate(positions):
             if j != idx:
-                d_sq = (xi - xx)**2 + (yi - yy)**2
+                d_sq = (xi - xx) ** 2 + (yi - yy) ** 2
                 dists.append((d_sq, j))
         dists.sort(key=lambda x: x[0])
         neigh = [words[d[1]] for d in dists[:k]]
@@ -1169,7 +1171,7 @@ def generate_interactive_wordcloud(freq_data, highlight_words=None, title='', ex
         for i, w in enumerate(words):
             color_idx = random_state.randint(0, 256)
             r, g, b, _ = selected_cmap(color_idx / 255.0)
-            color_list.append(f"rgb({int(r*255)}, {int(g*255)}, {int(b*255)})")
+            color_list.append(f"rgb({int(r * 255)}, {int(g * 255)}, {int(b * 255)})")
             custom_data.append((freqs[i], w, nearest_terms(i, 3)))
 
     x_vals, y_vals = zip(*positions)
@@ -1201,15 +1203,20 @@ def generate_interactive_wordcloud(freq_data, highlight_words=None, title='', ex
     )
     return fig
 
+
 def render_wordclouds(var_resps, var_name="open_var"):
     """
-    Renders multiple tabs of wordcloud outputs (Static, Interactive, Bar+WC, Frequencies)
+    Renders multiple tabs of wordcloud outputs (Static, Interactive, etc.)
     and includes the variable name in downloaded filenames.
+
+    Changes:
+      1) Adds a slider to update the size of the mask icon (in pixels).
+      2) Allows the user to choose whether to show the actual icon behind the words
+         (by overlaying the wordcloud in front).
     """
-    # 1) Quadrant layout
+
     layout_choice = st.selectbox("Number of quadrants", [1, 2, 3, 4], index=0)
 
-    # 2) For each quadrant, let user pick categories from var_resps
     groups_available = sorted(list(var_resps.keys()))
     quadrant_selections = {}
     for q_idx in range(layout_choice):
@@ -1220,21 +1227,23 @@ def render_wordclouds(var_resps, var_name="open_var"):
             []
         )
 
-    # 3) EXACT number of words
-    exact_words = st.slider("Exact number of words per quadrant", min_value=10, max_value=300, value=50, step=10)
+    exact_words = st.slider(
+        "Exact number of words per quadrant",
+        min_value=10,
+        max_value=300,
+        value=50,
+        step=10
+    )
 
-    # 4) Color scheme for non-highlight
     color_schemes = [
         "viridis", "plasma", "inferno", "magma", "cividis", "winter",
         "coolwarm", "bone", "terrain", "twilight"
     ]
     chosen_cmap = st.selectbox("Color Scheme (if no highlights)", color_schemes, index=0)
 
-    # 5) Highlight words
     highlight_input = st.text_area("Highlight words (one per line)", "")
     highlight_set = {h.strip().lower() for h in highlight_input.split('\n') if h.strip()}
 
-    # Gather text for each quadrant
     quadrant_texts = {}
     for quad_label, cat_list in quadrant_selections.items():
         combined_texts = []
@@ -1242,25 +1251,16 @@ def render_wordclouds(var_resps, var_name="open_var"):
             combined_texts.extend(var_resps[cat])
         quadrant_texts[quad_label] = combined_texts
 
-    # Check if there's any content at all
     nonempty_quadrants = any(len(txts) > 0 for txts in quadrant_texts.values())
     if not nonempty_quadrants:
         st.warning("No groups selected or no data to show.")
         return
 
-    # Build freq data for each quadrant
     quadrant_freqs = {}
     for quad_label, txt_list in quadrant_texts.items():
         freq_ = generate_word_freq(txt_list, exact_words=exact_words)
         quadrant_freqs[quad_label] = freq_
 
-    # Proportions for each quadrant
-    total_responses = sum(len(txts) for txts in quadrant_texts.values())
-    group_proportions = {}
-    for quad_label, txt_list in quadrant_texts.items():
-        group_proportions[quad_label] = len(txt_list) / total_responses if total_responses else 0
-
-    # Prepare combined CSV for frequencies
     all_quadrants_freq = []
     for quad_label, freq_dat in quadrant_freqs.items():
         for w, f_ in freq_dat:
@@ -1268,17 +1268,126 @@ def render_wordclouds(var_resps, var_name="open_var"):
     df_all_quadrants_freq = pd.DataFrame(all_quadrants_freq, columns=["Quadrant", "Word", "Frequency"])
     csv_all_freq = df_all_quadrants_freq.to_csv(index=False).encode('utf-8')
 
-    # Build tabs
     tabs = st.tabs(["📸 Static", "🔄 Interactive"])
 
     ###############################################################################
     # TAB 0: STATIC WORDCLOUD
     ###############################################################################
     with tabs[0]:
+        with st.expander("Advanced Static Wordcloud Formatting"):
+            spiral_type = st.selectbox(
+                "Shape Type",
+                ["archimedean", "rectangular", "default"],
+                index=0
+            )
+
+            use_gradient = st.checkbox("Apply gradient color by frequency (based on chosen colormap)?")
+
+            use_custom_freq_colors = st.checkbox("Use custom ascending color from min to max frequency?")
+            low_freq_color = "#D3D3D3"
+            high_freq_color = "#000000"
+            if use_custom_freq_colors:
+                low_freq_color = st.color_picker("Low frequency color", value="#D3D3D3")
+                high_freq_color = st.color_picker("High frequency color", value="#000000")
+
+            # --------------------------------------------------------------------------------
+            # DYNAMIC MASK LOADING
+            # --------------------------------------------------------------------------------
+            import os
+            masks_dir = "masks"
+            mask_files = []
+            if os.path.isdir(masks_dir):
+                mask_files = [f for f in os.listdir(masks_dir) if f.lower().endswith(".png")]
+
+            shape_options = ["None (no mask)", "Transparent Background (No Bounding Box)"] + mask_files
+            shape_option = st.selectbox("Wordcloud Shape", shape_options, index=0)
+
+            # Let user pick an icon size if shape_option is a PNG
+            icon_size = 1000
+            show_icon_behind = False
+            if shape_option not in ("None (no mask)", "Transparent Background (No Bounding Box)"):
+                region_option = st.radio(
+                    "Fill words:",
+                    ["Inside the black icon", "Outside (in the white region)"],
+                    index=0
+                )
+                icon_size = st.slider("Pixelation", min_value=300, max_value=2000, value=1000, step=100)
+                show_icon_behind = st.checkbox("Show actual icon behind words?", value=False)
+            else:
+                region_option = None
+
+            contour_checkbox = st.checkbox("Add a contour around words?")
+            contour_color = st.color_picker("Contour color", value="#000000")
+
         fig_cols = 2 if layout_choice > 1 else 1
         fig_rows = (layout_choice + 1) // 2 if layout_choice > 2 else (1 if layout_choice < 3 else 2)
         fig = plt.figure(figsize=(8 * fig_cols, 6 * fig_rows))
         gs = fig.add_gridspec(fig_rows, fig_cols)
+
+        import numpy as np
+        mask = None
+        transparent_bg = False
+        icon_img = None
+
+        # --------------------------------------------------------------------------------
+        # BUILD THE MASK IF NEEDED
+        # --------------------------------------------------------------------------------
+        if shape_option == "Transparent Background (No Bounding Box)":
+            transparent_bg = True
+
+        elif shape_option not in ("None (no mask)", "Transparent Background (No Bounding Box)"):
+            from PIL import Image
+
+            try:
+                mask_path = os.path.join(masks_dir, shape_option)
+                # Load original icon
+                loaded_icon = Image.open(mask_path).convert("RGBA")
+
+                # Resize up or down to "icon_size" x "icon_size"
+                loaded_icon = loaded_icon.resize((icon_size, icon_size), Image.LANCZOS)
+
+                # Keep a copy for optional behind-words display
+                icon_img = loaded_icon.copy()
+
+                # Merge alpha with white background
+                white_bg = Image.new("RGBA", loaded_icon.size, "WHITE")
+                merged_img = Image.alpha_composite(white_bg, loaded_icon)
+
+                # Convert to numpy array
+                mask_array = np.array(merged_img)
+
+                # Threshold for "black"
+                rgb_sum = mask_array[..., :3].sum(axis=-1)
+                threshold = 40
+
+                if region_option == "Outside (in the white region)":
+                    mask = np.where(rgb_sum < threshold, 255, 0).astype(np.uint8)
+                else:
+                    mask = np.where(rgb_sum < threshold, 0, 255).astype(np.uint8)
+
+                ratio_unmasked = (mask > 0).sum() / float(mask.size)
+                if ratio_unmasked < 0.05:
+                    st.warning(
+                        "Warning: More than 95% of the area is masked. "
+                        "You might get 'Couldn't find space to draw' errors. "
+                        "Consider decreasing your threshold or increasing icon size."
+                    )
+            except Exception as e:
+                st.warning(f"Could not load or process {shape_option} from 'masks' folder: {e}")
+                mask = None
+                icon_img = None
+
+        # Helper function for blending two hex colors
+        def blend_hex_colors(hex1, hex2, t):
+            def hex_to_rgb(hx):
+                hx = hx.lstrip('#')
+                return tuple(int(hx[i : i + 2], 16) for i in (0, 2, 4))
+            r1, g1, b1 = hex_to_rgb(hex1)
+            r2, g2, b2 = hex_to_rgb(hex2)
+            r = int(r1 + (r2 - r1) * t)
+            g = int(g1 + (g2 - g1) * t)
+            b = int(b1 + (b2 - b1) * t)
+            return f"rgb({r},{g},{b})"
 
         idx = 0
         for quad_label, freq_dat in quadrant_freqs.items():
@@ -1287,44 +1396,88 @@ def render_wordclouds(var_resps, var_name="open_var"):
             ax_ = fig.add_subplot(gs[row_, col_])
 
             if freq_dat:
-                if highlight_set:
-                    # highlight
+                freq_dict = dict(freq_dat)
+                max_count = max(freq_dict.values()) if freq_dict else 1
+                min_count = min(freq_dict.values()) if freq_dict else 0
+
+                if use_custom_freq_colors:
+                    def custom_asc_color_func(word, font_size, position, orientation, random_state=None, **kwargs):
+                        f_ = freq_dict.get(word, 0)
+                        scale = (f_ - min_count) / (max_count - min_count) if max_count > min_count else 0.0
+                        return blend_hex_colors(low_freq_color, high_freq_color, scale)
+                    wc_color_func = custom_asc_color_func
+
+                elif highlight_set and not use_gradient:
                     def color_func(word, *args, **kwargs):
                         return "rgb(68, 57, 131)" if word.lower() in highlight_set else "gray"
-                    wc = WordCloud(
-                        width=800,
-                        height=600,
-                        background_color='white',
-                        collocations=False,
-                        max_words=exact_words,
-                        color_func=color_func
-                    )
+                    wc_color_func = color_func
+
+                elif use_gradient:
+                    selected_cmap = get_cmap_fixed(chosen_cmap)
+                    def gradient_color_func(word, font_size, position, orientation, random_state=None, **kwargs):
+                        f_ = freq_dict.get(word, 0)
+                        scale = (f_ - min_count) / (max_count - min_count) if max_count > min_count else 0
+                        r, g, b, _ = selected_cmap(scale)
+                        return f"rgb({int(r * 255)}, {int(g * 255)}, {int(b * 255)})"
+                    wc_color_func = gradient_color_func
+
                 else:
-                    # colormap
                     random_state = np.random.RandomState(42)
                     selected_cmap = get_cmap_fixed(chosen_cmap)
-
-                    def color_func(word, font_size, position, orientation, random_state=random_state, **kwargs):
+                    def random_cmap_color_func(word, font_size, position, orientation, random_state=random_state, **kwargs):
                         color_idx = random_state.randint(0, 256)
                         r, g, b, _ = selected_cmap(color_idx / 255.0)
                         return f"rgb({int(r * 255)}, {int(g * 255)}, {int(b * 255)})"
-                    wc = WordCloud(
-                        width=800,
-                        height=600,
-                        background_color='white',
-                        collocations=False,
-                        max_words=exact_words,
-                        color_func=color_func
-                    )
+                    wc_color_func = random_cmap_color_func
+
+                wc_params = {
+                    "width": 800,
+                    "height": 600,
+                    "collocations": False,
+                    "max_words": exact_words,
+                    "color_func": wc_color_func,
+                    "mask": mask,
+                    "contour_width": 5 if contour_checkbox else 0,
+                    "contour_color": contour_color if contour_checkbox else None,
+                }
+
+                if transparent_bg:
+                    wc_params["mode"] = "RGBA"
+                    wc_params["background_color"] = None
+                    wc_params["margin"] = 1
+                else:
+                    wc_params["background_color"] = "white"
+
+                wc = WordCloud(**wc_params)
 
                 word_list = []
                 for w, f_ in freq_dat:
                     word_list.extend([w] * f_)
                 joined_text = ' '.join(word_list)
-                wc.generate(joined_text)
 
-                ax_.imshow(wc, interpolation='bilinear')
-                ax_.axis('off')
+                try:
+                    wc.generate(joined_text)
+
+                    # -------------------------------------------
+                    # If user wants to see the icon behind words:
+                    # -------------------------------------------
+                    if show_icon_behind and icon_img is not None:
+                        # We'll show the background icon first,
+                        # then overlay the wordcloud.
+                        ax_.imshow(icon_img, interpolation='bilinear')
+
+                    ax_.imshow(wc, interpolation='bilinear')
+                    ax_.axis('off')
+                except ValueError as ve:
+                    ax_.text(
+                        0.5, 0.5,
+                        f"Mask too restrictive:\n{ve}",
+                        ha='center',
+                        va='center',
+                        fontsize=12,
+                        color='red'
+                    )
+
             else:
                 ax_.text(0.5, 0.5, "No data", ha='center', va='center', fontsize=14)
 
@@ -1332,12 +1485,11 @@ def render_wordclouds(var_resps, var_name="open_var"):
 
         st.pyplot(fig)
 
-        # Download static wordcloud as PNG, with var_name in filename
         buf = BytesIO()
         fig.savefig(buf, format='png', dpi=300, bbox_inches='tight')
         buf.seek(0)
         st.download_button(
-            f"💾 Download Static Wordcloud PNG",
+            label="💾 Download Static Wordcloud PNG",
             data=buf.getvalue(),
             file_name=f"{var_name}_wordcloud_quadrants_static.png",
             mime="image/png",
@@ -1346,9 +1498,8 @@ def render_wordclouds(var_resps, var_name="open_var"):
         )
         plt.close(fig)
 
-        # Download associated frequencies as CSV, with var_name
         st.download_button(
-            label=f"📥 Download Frequencies CSV",
+            label="📥 Download Frequencies CSV",
             data=csv_all_freq,
             file_name=f"{var_name}_wordcloud_quadrants_frequencies.csv",
             mime="text/csv",
@@ -1393,16 +1544,14 @@ def render_wordclouds(var_resps, var_name="open_var"):
         )
         st.plotly_chart(fig_int, use_container_width=True)
 
-        # Download associated frequencies as CSV
         st.download_button(
-            label=f"📥 Download Frequencies CSV",
+            label="📥 Download Frequencies CSV",
             data=csv_all_freq,
             file_name=f"{var_name}_wordcloud_quadrants_frequencies.csv",
             mime="text/csv",
             use_container_width=True,
             key="interactive_csv_download"
         )
-
 
 ###############################################################################
 # 8) WORD DIVE
