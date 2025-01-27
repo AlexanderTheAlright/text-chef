@@ -568,12 +568,12 @@ def process_text(text, stopwords=None, synonym_groups=None):
 ###############################################################################
 # OPEN CODING
 ###############################################################################
+
 def auto_save_check():
     """
     Automatically save coding state every 5 minutes if changes have been made
     and not saved since then.
     """
-    # Ensure we have a 'last_save_time' in session_state
     if "last_save_time" not in st.session_state:
         st.session_state.last_save_time = time.time()
         return
@@ -585,72 +585,21 @@ def auto_save_check():
         else:
             st.sidebar.warning("Auto-save attempted but failed.")
 
-def load_open_coding_groups(file='cached_groups.csv'):
-    """
-    Load group definitions from CSV -> session_state.open_coding_groups.
-    Each entry: {"name": <group_name>, "desc": <group_description>}
-    """
-    if os.path.exists(file):
-        try:
-            df = pd.read_csv(file)
-            return df.to_dict('records')
-        except:
-            pass
-    return []
-
-def save_open_coding_groups(file='cached_groups.csv'):
-    """Save the current open_coding_groups to CSV."""
-    df_g = pd.DataFrame(st.session_state.open_coding_groups)
-    df_g.to_csv(file, index=False)
-
-def load_open_coding_assignments(file='cached_assignments.csv'):
-    """
-    Load open-coding assignments from CSV -> session_state.open_coding_assignments
-    Keyed by (id, variable).
-    """
-    if os.path.exists(file):
-        try:
-            df = pd.read_csv(file)
-            assignment_dict = {}
-            for _, row in df.iterrows():
-                id = str(row["id"]) if "id" in row and pd.notna(row["id"]) else ""
-                var = str(row["variable"]) if "variable" in row and pd.notna(row["variable"]) else ""
-                grp = row["group"] if "group" in row else "Unassigned"
-                dict_key = (id, var)
-                assignment_dict[dict_key] = grp
-            return assignment_dict
-        except:
-            pass
-    return {}
-
-def save_open_coding_assignments(file='cached_assignments.csv'):
-    """
-    Saves open-coding assignments from st.session_state.open_coding_assignments
-    Keyed by (id, variable).
-    """
-    row_list = []
-    for (id, var), grp in st.session_state.open_coding_assignments.items():
-        row_list.append({
-            "id": id,
-            "variable": var,
-            "group": grp
-        })
-    df_a = pd.DataFrame(row_list)
-    df_a.to_csv(file, index=False)
 
 def save_coding_state():
     """
     Saves the group definitions + the coded assignments to disk,
-    plus optional timestamped backup copies in 'coding_backups/'.
+    plus optional time-stamped backup copies in 'coding_backups/'.
+    Ensures permanent storage of both group definitions and assignment data.
     """
     try:
         # 1) Save group definitions
         if st.session_state.open_coding_groups:
-            save_open_coding_groups('cached_groups.csv')
+            save_open_coding_groups('assignment_groups.csv')
 
         # 2) Save open-coding assignments
         if st.session_state.open_coding_assignments:
-            save_open_coding_assignments('cached_assignments.csv')
+            save_open_coding_assignments('assignments.csv')
 
         # 3) Also optional time-stamped backups
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -664,347 +613,425 @@ def save_coding_state():
 
         st.session_state.last_save_time = time.time()
         return True
+
     except Exception as e:
         st.error(f"Error saving coding state: {e}")
         return False
 
+
 def initialize_coding_state():
-    """Ensure open coding data is loaded exactly once."""
+    """
+    Ensure open coding data is loaded exactly once
+    and we have placeholders in st.session_state for data.
+    """
     if 'coding_initialized' not in st.session_state:
         st.session_state.open_coding_groups = load_open_coding_groups()
         st.session_state.open_coding_assignments = load_open_coding_assignments()
         st.session_state.coding_initialized = True
 
-    # Also ensure we have a place to store the table data by variable
     if 'open_coding_table_data' not in st.session_state:
         st.session_state.open_coding_table_data = {}  # dict {var -> final_df}
 
+def load_open_coding_groups(file='assignment_groups.csv'):
+    """
+    Load group definitions from CSV -> st.session_state.open_coding_groups.
+    Each entry is expected as {"name": <group_name>, "desc": <group_description>}.
+    """
+    if os.path.exists(file):
+        try:
+            df = pd.read_csv(file)
+            return df.to_dict('records')
+        except:
+            pass
+    return []
+
+
+def save_open_coding_groups(file='assignment_groups.csv'):
+    """
+    Save the current open_coding_groups to CSV.
+    Each row: name, desc
+    """
+    df_g = pd.DataFrame(st.session_state.open_coding_groups)
+    if not df_g.empty:
+        df_g.to_csv(file, index=False)
+
+def load_open_coding_assignments(file='assignments.csv'):
+    """
+    Create or load an assignment CSV that uses columns:
+       [id, variable, primary_code, secondary_code].
+    We store them in st.session_state.open_coding_assignments as:
+       (id, var) -> {"primary_code": <str>, "secondary_code": <str>}.
+
+    If file doesn't exist or is empty, return an empty dict.
+
+    This function also tries to handle older columns (e.g. 'group',
+    'primary_group', 'secondary_group', or 'panelistid') by renaming them on load.
+    """
+    assignment_dict = {}
+    if os.path.exists(file):
+        try:
+            df = pd.read_csv(file)
+
+            # Attempt to rename older columns to the new ones if needed
+            rename_map = {}
+
+            # If someone used "panelistid" instead of "id"
+            if "panelistid" in df.columns and "id" not in df.columns:
+                rename_map["panelistid"] = "id"
+
+            if "primary_group" in df.columns and "primary_code" not in df.columns:
+                rename_map["primary_group"] = "primary_code"
+            if "secondary_group" in df.columns and "secondary_code" not in df.columns:
+                rename_map["secondary_group"] = "secondary_code"
+            if "group" in df.columns and "primary_code" not in df.columns:
+                rename_map["group"] = "primary_code"
+
+            if rename_map:
+                df = df.rename(columns=rename_map)
+
+            # Ensure columns exist
+            for col in ["id", "variable", "primary_code", "secondary_code"]:
+                if col not in df.columns:
+                    df[col] = None
+
+            df = df[["id", "variable", "primary_code", "secondary_code"]]
+            df["primary_code"] = df["primary_code"].fillna("unassigned").astype(str)
+            df["secondary_code"] = df["secondary_code"].fillna("unassigned").astype(str)
+
+            for _, row in df.iterrows():
+                key = (str(row["id"]), str(row["variable"]))
+                assignment_dict[key] = {
+                    "primary_code": row["primary_code"],
+                    "secondary_code": row["secondary_code"]
+                }
+
+        except Exception as e:
+            print(f"[load_open_coding_assignments] Could not load '{file}': {e}")
+
+    return assignment_dict
+
+
+def save_open_coding_assignments(file='assignments.csv'):
+    """
+    Writes out columns: [id, variable, primary_code, secondary_code].
+    Everything defaults to 'unassigned' if missing.
+    """
+    rows = []
+    for (row_id, var), codes in st.session_state.open_coding_assignments.items():
+        rows.append({
+            "id": row_id,
+            "variable": var,
+            "primary_code": codes.get("primary_code", "unassigned"),
+            "secondary_code": codes.get("secondary_code", "unassigned"),
+        })
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df.to_csv(file, index=False)
+
 def update_coded_assignments(variable, final_df, df_updated=None):
     """
-    1) If `df_updated` is provided (from st.data_editor), merge those changes into
-       st.session_state.open_coding_assignments.
-    2) Then, for each row in `final_df`, set coded_group from st.session_state.open_coding_assignments.
-    3) Save to disk.
+    1) Merge user edits (df_updated) into st.session_state.open_coding_assignments.
+    2) Reflect those assignments into final_df under columns:
+         "primary_code", "primary_desc", "secondary_code", "secondary_desc".
+    3) Save to disk (via save_coding_state).
     Returns True on success, False on error.
+
+    Ensures each row is matched by (row_id, variable) -> assignment info.
+    Also ensures the correct group description goes into primary_desc or
+    secondary_desc, drawn from st.session_state.open_coding_groups.
     """
 
-    # (A) Merge changes from df_updated if present
+    # (A) Merge user edits from data_editor if provided
     if df_updated is not None and not df_updated.empty:
         for i, row in df_updated.iterrows():
             row_id = str(row.get("id", ""))
-            new_grp = row.get("coded_group", "Unassigned")
             dict_key = (row_id, variable)
-            st.session_state.open_coding_assignments[dict_key] = new_grp
 
-    # (B) Now reflect session_state assignments back into final_df
+            if dict_key not in st.session_state.open_coding_assignments:
+                st.session_state.open_coding_assignments[dict_key] = {
+                    "primary_code": "unassigned",
+                    "secondary_code": "unassigned"
+                }
+
+            # Update session-state with new codes
+            p_val = row.get("primary_code", "unassigned") or "unassigned"
+            s_val = row.get("secondary_code", "unassigned") or "unassigned"
+
+            st.session_state.open_coding_assignments[dict_key]["primary_code"] = p_val
+            st.session_state.open_coding_assignments[dict_key]["secondary_code"] = s_val
+
+    # (B) Reflect assignments back into final_df
     if not final_df.empty:
         for idx_ in final_df.index:
             row_ = final_df.loc[idx_]
             row_id_ = str(row_.get("id", ""))
             dict_key = (row_id_, variable)
-            assigned = st.session_state.open_coding_assignments.get(dict_key, "Unassigned")
-            final_df.at[idx_, "coded_group"] = assigned
 
-            if assigned != "Unassigned":
-                gobj = next((g for g in st.session_state.open_coding_groups
-                            if g["name"] == assigned), None)
-                final_df.at[idx_, "group_description"] = gobj["desc"] if gobj else ""
-            else:
-                final_df.at[idx_, "group_description"] = ""
+            assigned_obj = st.session_state.open_coding_assignments.get(
+                dict_key,
+                {"primary_code": "unassigned", "secondary_code": "unassigned"}
+            )
 
-    # (C) Finally, save to disk
+            final_df.at[idx_, "primary_code"] = assigned_obj.get("primary_code", "unassigned")
+            final_df.at[idx_, "secondary_code"] = assigned_obj.get("secondary_code", "unassigned")
+
+            # If desc columns exist, fill them accordingly
+            if "primary_desc" in final_df.columns:
+                if final_df.at[idx_, "primary_code"] != "unassigned":
+                    gobj_pri = next(
+                        (g for g in st.session_state.open_coding_groups
+                         if g["name"] == final_df.at[idx_, "primary_code"]),
+                        None
+                    )
+                    final_df.at[idx_, "primary_desc"] = gobj_pri["desc"] if gobj_pri else ""
+                else:
+                    final_df.at[idx_, "primary_desc"] = ""
+
+            if "secondary_desc" in final_df.columns:
+                if final_df.at[idx_, "secondary_code"] != "unassigned":
+                    gobj_sec = next(
+                        (g for g in st.session_state.open_coding_groups
+                         if g["name"] == final_df.at[idx_, "secondary_code"]),
+                        None
+                    )
+                    final_df.at[idx_, "secondary_desc"] = gobj_sec["desc"] if gobj_sec else ""
+                else:
+                    final_df.at[idx_, "secondary_desc"] = ""
+
+    # (C) Finally, save everything to disk
     try:
-        saved = save_coding_state()  # your existing function
+        saved = save_coding_state()
         return bool(saved)
     except Exception as e:
         st.error(f"Error saving coding: {e}")
         return False
-        
-def render_open_coding_interface(variable, responses_dict, open_var_options, grouping_columns):
-    initialize_coding_state()
 
-    # Call auto_save_check at the beginning
+
+########################################
+# 5) RENDERING THE OPEN CODING INTERFACE
+########################################
+
+def render_open_coding_interface(variable, responses_dict, open_var_options, grouping_columns):
+    """
+    High-level function that:
+      - Initializes the system (loads or creates brand-new caches).
+      - Combines dataframes from responses_dict for the selected 'variable'.
+      - Ensures final_df has columns: 'primary_code', 'secondary_code',
+        'primary_desc', 'secondary_desc' (all default to "unassigned"/"").
+      - Shows two pie charts side by side for primary_code & secondary_code.
+      - Renders a data_editor for coding updates.
+      - Lets user do random sampling, etc.
+
+    The essential parts:
+      * Each row is identified by (id, variable).
+      * Primary / Secondary code selections come from st.session_state.open_coding_groups.
+      * We store the group 'desc' in primary_desc or secondary_desc accordingly.
+      * We constantly save to 'assignment_groups.csv' and 'assignment_assignments.csv'.
+    """
+
+    # 0) Initialization & autosave
+    initialize_coding_state()
     auto_save_check()
 
-    # 1) Combine & cache the relevant DataFrame for the chosen variable
+    # 1) Build or retrieve the main DataFrame for 'variable'
     if variable not in st.session_state.open_coding_table_data:
-        # Gather all frames that have 'variable' column
         all_dfs = []
         for sid, df in responses_dict.items():
             if variable in df.columns:
-                tmp = df.copy()
-                tmp["surveyid"] = sid
-                all_dfs.append(tmp)
+                cpy = df.copy()
+                cpy["surveyid"] = sid
+                all_dfs.append(cpy)
 
         if not all_dfs:
-            st.warning("No valid data found for this variable.")
+            st.warning(f"No data found for variable '{variable}'.")
             return
 
         cdf = pd.concat(all_dfs, ignore_index=True)
         cdf = cdf.dropna(subset=[variable])
         cdf = cdf[cdf[variable].astype(str).str.strip() != ""]
 
-        # Initialize columns if missing
-        if "coded_group" not in cdf.columns:
-            cdf["coded_group"] = "Unassigned"
-        if "group_description" not in cdf.columns:
-            cdf["group_description"] = ""
+        # Ensure required columns exist
+        for needed in ["primary_code", "primary_desc", "secondary_code", "secondary_desc"]:
+            if needed not in cdf.columns:
+                if "desc" in needed:
+                    cdf[needed] = ""
+                else:
+                    cdf[needed] = "unassigned"
 
-        # Apply existing assignments
+        # Merge existing assignments from session_state
         for idx, row in cdf.iterrows():
-            # If your file has "id", use that first; else fallback to "id"
-            id = str(row.get("id", "")) or str(row.get("id", ""))
-            dict_key = (id, variable)
-            assigned_grp = st.session_state.open_coding_assignments.get(dict_key, "Unassigned")
-            cdf.at[idx, "coded_group"] = assigned_grp
+            row_id = str(row.get("id", "")) or ""
+            key_ = (row_id, variable)
+            assigned_obj = st.session_state.open_coding_assignments.get(
+                key_, {"primary_code": "unassigned", "secondary_code": "unassigned"}
+            )
+            cdf.at[idx, "primary_code"] = assigned_obj.get("primary_code", "unassigned")
+            cdf.at[idx, "secondary_code"] = assigned_obj.get("secondary_code", "unassigned")
 
-            if assigned_grp != "Unassigned":
-                gobj = next((g for g in st.session_state.open_coding_groups if g["name"] == assigned_grp), None)
-                if gobj:
-                    cdf.at[idx, "group_description"] = gobj.get("desc", "")
+            # If codes not unassigned, fill desc columns
+            if cdf.at[idx, "primary_code"] != "unassigned":
+                gobj = next(
+                    (g for g in st.session_state.open_coding_groups
+                     if g["name"] == cdf.at[idx, "primary_code"]),
+                    None
+                )
+                cdf.at[idx, "primary_desc"] = gobj["desc"] if gobj else ""
+
+            if cdf.at[idx, "secondary_code"] != "unassigned":
+                gobj2 = next(
+                    (g for g in st.session_state.open_coding_groups
+                     if g["name"] == cdf.at[idx, "secondary_code"]),
+                    None
+                )
+                cdf.at[idx, "secondary_desc"] = gobj2["desc"] if gobj2 else ""
 
         st.session_state.open_coding_table_data[variable] = cdf
 
-    # 2) Retrieve our "final_df" from session_state
     final_df = st.session_state.open_coding_table_data[variable]
     if final_df.empty:
-        st.warning("No valid data rows for this variable.")
+        st.warning("No valid rows for this variable.")
         return
 
-    # =================== PIE CHART FOR PROPORTIONS =======================
-    group_counts = final_df["coded_group"].value_counts(dropna=False).reset_index()
-    group_counts.columns = ["Group", "Count"]
-    total_n = group_counts["Count"].sum()
-    if total_n > 0:
-        fig_pie = px.pie(
-            group_counts,
-            values="Count",
-            names="Group",
-            title="Proportion of Each Coded Group",
-            hole=0.3
-        )
-        fig_pie.update_layout(width=600, height=400)
-        st.plotly_chart(fig_pie, use_container_width=False)
+    # 2) Pie Charts of Primary & Secondary Codes
+    c1, c2 = st.columns(2)
+    group_data = pd.DataFrame(st.session_state.open_coding_groups)
+    if group_data.empty:
+        st.info("No coding groups defined yet, so pie charts will be minimal.")
     else:
-        st.info("No coded groups yet.")
-
-    # =================== GROUP MANAGEMENT UI ===================
-    with st.container():
-        # ----------------------------------
-        # ADD / UPDATE GROUP
-        # ----------------------------------
-        c1, c2 = st.columns([3, 1])
         with c1:
-            new_group_name = st.text_input("Group Name:")
-            new_group_desc = st.text_input("Group Description:")
-            if st.button("➕ Add / Update Group"):
-                gname = new_group_name.strip()
-                if gname:
-                    existing = next((g for g in st.session_state.open_coding_groups
-                                     if g['name'] == gname), None)
-                    if existing:
-                        existing["desc"] = new_group_desc.strip()
-                        st.success(f"Updated group '{gname}'.")
-                    else:
-                        st.session_state.open_coding_groups.append({
-                            "name": gname,
-                            "desc": new_group_desc.strip()
-                        })
-                        st.success(f"Created new group '{gname}'.")
-                    save_coding_state()
+            if "primary_code" in final_df.columns:
+                pc_counts = final_df["primary_code"].value_counts(dropna=False).reset_index()
+                pc_counts.columns = ["Group", "Count"]
+                merged_pc = pd.merge(
+                    pc_counts, group_data, left_on="Group", right_on="name", how="left"
+                ).rename(columns={"desc": "Description"})
+                merged_pc["Description"] = merged_pc["Description"].fillna("No Description")
+
+                if merged_pc["Count"].sum() > 0:
+                    fig_p = px.pie(
+                        merged_pc,
+                        values="Count",
+                        names="Group",
+                        hover_data=["Description"],
+                        title="Primary Code",
+                        color_discrete_sequence=px.colors.qualitative.Plotly
+                    )
+                    fig_p.update_layout(width=400, height=400, margin=dict(t=40, b=0, l=0, r=0))
+                    st.plotly_chart(fig_p, use_container_width=False)
                 else:
-                    st.warning("Please enter a valid group name.")
+                    st.info("No codes assigned for primary yet.")
 
         with c2:
-            if st.button("💾 Save Groups"):
-                if save_coding_state():
-                    st.success("Groups saved.")
+            if "secondary_code" in final_df.columns:
+                sc_counts = final_df["secondary_code"].value_counts(dropna=False).reset_index()
+                sc_counts.columns = ["Group", "Count"]
+                merged_sc = pd.merge(
+                    sc_counts, group_data, left_on="Group", right_on="name", how="left"
+                ).rename(columns={"desc": "Description"})
+                merged_sc["Description"] = merged_sc["Description"].fillna("No Description")
+
+                if merged_sc["Count"].sum() > 0:
+                    fig_s = px.pie(
+                        merged_sc,
+                        values="Count",
+                        names="Group",
+                        hover_data=["Description"],
+                        title="Secondary Code",
+                        color_discrete_sequence=px.colors.qualitative.Bold
+                    )
+                    fig_s.update_layout(width=400, height=400, margin=dict(t=40, b=0, l=0, r=0))
+                    st.plotly_chart(fig_s, use_container_width=False)
                 else:
-                    st.error("Error saving groups.")
+                    st.info("No codes assigned for secondary yet.")
 
-        # ----------------------------------
-        # REMOVE A GROUP
-        # ----------------------------------
-        delete_choice = st.selectbox(
-            "❌ Remove a group?",
-            ["(None)"] + [g["name"] for g in st.session_state.open_coding_groups]
-        )
-        if delete_choice != "(None)":
-            if st.button(f"🗑️ Remove Group '{delete_choice}'"):
-                # Remove from group list
-                st.session_state.open_coding_groups = [
-                    g for g in st.session_state.open_coding_groups
-                    if g["name"] != delete_choice
-                ]
-                # Unassign any references in existing coded assignments
-                for k, v in list(st.session_state.open_coding_assignments.items()):
-                    if v == delete_choice:
-                        st.session_state.open_coding_assignments[k] = "Unassigned"
-                save_coding_state()
-                st.success(f"Removed group '{delete_choice}'")
-                st.rerun()
-
-        # ----------------------------------
-        # COMBINE GROUPS
-        # ----------------------------------
-        with st.expander("Combine Groups", expanded=False):
-            # 1) Let the user pick groups to merge
-            all_group_names = [g["name"] for g in st.session_state.open_coding_groups]
-            groups_to_merge = st.multiselect(
-                "Select two or more groups to combine",
-                all_group_names
-            )
-
-            # 2) New group name/desc
-            merged_group_name = st.text_input("New Merged Group Name (for the new group)")
-            merged_group_desc = st.text_input("Merged Group Description")
-
-            # 3) Button to trigger merge
-            if st.button("Combine & Save"):
-                # Basic validations
-                if len(groups_to_merge) < 2:
-                    st.warning("Please select at least two groups to combine.")
-                elif not merged_group_name.strip():
-                    st.warning("Please provide a valid name for the new group.")
-                else:
-                    # Replace old groups in assignments
-                    for (some_id, some_var), old_grp in list(st.session_state.open_coding_assignments.items()):
-                        if old_grp in groups_to_merge:
-                            st.session_state.open_coding_assignments[(some_id, some_var)] = merged_group_name.strip()
-
-                    # Remove old groups from session_state
-                    st.session_state.open_coding_groups = [
-                        g for g in st.session_state.open_coding_groups
-                        if g["name"] not in groups_to_merge
-                    ]
-
-                    # Add the new merged group
-                    st.session_state.open_coding_groups.append({
-                        "name": merged_group_name.strip(),
-                        "desc": merged_group_desc.strip()
-                    })
-
-                    # Save & re-run
-                    if save_coding_state():
-                        st.success(f"Merged {groups_to_merge} into '{merged_group_name.strip()}' successfully.")
-                        st.rerun()
-                    else:
-                        st.error("Error saving after merging groups.")
-
-    # =================== FILTERING & TABLE EDITOR ===================
+    # 3) Table Editor with optional filtering
     st.markdown("---")
-    st.subheader("🔎 Data Selection & Filters")
+    st.subheader("Edit Coding Assignments")
 
-    default_cols = ["id", "surveyid", "age", "gender", "region", "jobtitle"]
+    # Example: if the user has "abc_open", the base var might be "abc"
     base_var = variable.replace("_open", "")
-    col_candidates = [c for c in grouping_columns if c not in default_cols and c not in [variable, base_var]]
-    user_cols = st.multiselect("Pick additional columns to display:", options=col_candidates, default=[])
+    desired_cols = [
+        "id", "age", "gender", "region", "jobtitle",
+        base_var,    # potential rank variable
+        variable,    # open-text variable
+        "primary_code", "primary_desc",
+        "secondary_code", "secondary_desc"
+    ]
+    existing_cols = [c for c in desired_cols if c in final_df.columns]
+    df_for_editor = final_df[existing_cols].copy()
 
-    used_cols = []
-    for dc in default_cols:
-        if dc in final_df.columns and dc not in used_cols:
-            used_cols.append(dc)
-    if base_var in final_df.columns and base_var not in used_cols:
-        used_cols.append(base_var)
-    used_cols.extend(user_cols)
-    if variable not in used_cols:
-        used_cols.append(variable)
-    # Add coded group columns last
-    if "coded_group" not in used_cols:
-        used_cols.append("coded_group")
-    if "group_description" not in used_cols:
-        used_cols.append("group_description")
-
-    # Deduplicate while preserving order
-    used_cols = list(dict.fromkeys(used_cols))
-
-    # Global filter
+    # --- Global search & column filters ---
     global_search = st.text_input("Global Search / Filter:", "", key="oc_global_search")
     show_col_filters = st.checkbox("Show column-based filters", value=False, key="oc_show_col_filters")
     col_filters = {}
+
     if show_col_filters:
         st.caption("Case-insensitive substring match per column.")
         ncols_per_line = 3
         filter_cols = st.columns(ncols_per_line)
-        for i, c in enumerate(used_cols):
+        for i, col_name in enumerate(existing_cols):
             with filter_cols[i % ncols_per_line]:
-                col_filters[c] = st.text_input(f"Filter: {c}", "")
+                col_filters[col_name] = st.text_input(f"Filter: {col_name}", "")
 
-    # Prepare data
-    df_for_editor = final_df[used_cols].copy()
-
-    # Global search
     if global_search.strip():
-        mask = pd.Series(False, index=df_for_editor.index)
-        for col_ in df_for_editor.columns:
-            mask |= df_for_editor[col_].astype(str).str.contains(global_search, case=False, na=False)
-        df_for_editor = df_for_editor[mask]
+        mask_global = df_for_editor.apply(
+            lambda row: row.astype(str).str.contains(global_search, case=False, na=False).any(),
+            axis=1
+        )
+        df_for_editor = df_for_editor[mask_global]
 
-    # Column filters
     if show_col_filters:
-        for c, val in col_filters.items():
+        for col_name, val in col_filters.items():
             if val.strip():
                 df_for_editor = df_for_editor[
-                    df_for_editor[c].astype(str).str.contains(val, case=False, na=False)
+                    df_for_editor[col_name].astype(str).str.contains(val, case=False, na=False)
                 ]
 
-    st.markdown("---")
-    st.subheader("⚓ Coding Table")
-    st.markdown("""
-    <style>
-    .coded-table-container {
-        margin-top: 5px;
-        margin-bottom: 20px;
-        border: 1px solid #CCC;
-        background-color: #FAFAFA;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-    st.markdown('<div class="coded-table-container">', unsafe_allow_html=True)
-
-    # Build column config
+    # --- Configure columns in the data_editor ---
+    group_names = ["unassigned"] + [g["name"] for g in st.session_state.open_coding_groups]
     col_config = {}
-    group_names = ["Unassigned"] + [g["name"] for g in st.session_state.open_coding_groups]
-    for c in df_for_editor.columns:
-        if c == "coded_group":
-            col_config[c] = st.column_config.SelectboxColumn(
-                label="coded group",
+    for col_ in df_for_editor.columns:
+        if col_ == "primary_code":
+            col_config[col_] = st.column_config.SelectboxColumn(
+                label="primary_code",
                 options=group_names
             )
-        elif c == "group_description":
-            col_config[c] = st.column_config.TextColumn(
-                label="group description",
+        elif col_ == "secondary_code":
+            col_config[col_] = st.column_config.SelectboxColumn(
+                label="secondary_code",
+                options=group_names
+            )
+        elif col_ in ["primary_desc", "secondary_desc"]:
+            col_config[col_] = st.column_config.TextColumn(
+                label=col_,
                 disabled=True
             )
         else:
-            col_config[c] = st.column_config.TextColumn(
-                label=c,
+            col_config[col_] = st.column_config.TextColumn(
+                label=col_,
                 disabled=True
             )
 
-    # -- Here is the crucial change: we capture the returned "df_updated" --
     df_updated = st.data_editor(
         df_for_editor,
         column_config=col_config,
         hide_index=True,
         use_container_width=True
     )
-    st.markdown('</div>', unsafe_allow_html=True)
 
-    # =================== SAVE CHANGES BUTTON ===================
-    if st.button("💾 Save Changes"):
+    # --- Button to save coding changes ---
+    if st.button("Save Coding Changes"):
         ok = update_coded_assignments(variable, final_df, df_updated=df_updated)
         if ok:
-            st.success("All coding saved successfully.")
+            st.success("Coding saved successfully.")
         else:
             st.error("Error saving coding.")
 
-    # ============== RANDOM SAMPLES (optional) ==============
+    # 4) Random Samples for convenience review
     st.markdown("---")
     st.markdown("### 🎲 Random Samples for Review")
 
     def build_samples_dict():
-        """Gather random samples from responses_dict for the chosen variable."""
         out = {"All": []}
         for sid, df in responses_dict.items():
             if variable in df.columns:
@@ -1023,7 +1050,7 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
         return out
 
     samples_dict = build_samples_dict()
-    import random
+    # Deduplicate by text
     for cat_k, items in samples_dict.items():
         seen_txt = set()
         newlist = []
@@ -1033,14 +1060,18 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
                 newlist.append(obj)
         samples_dict[cat_k] = newlist
 
+    # Let user choose how many random samples
     num_samp = st.slider("Number of samples per group", 1, 20, 5)
-    random.seed(st.session_state.get("sample_seed", 1234))
+    if "sample_seed" not in st.session_state:
+        st.session_state["sample_seed"] = 1234
+    random.seed(st.session_state["sample_seed"])
 
     for cat, arr in samples_dict.items():
         st.markdown(f"#### {cat} (Total: {len(arr)})")
         if not arr:
             st.write("🚫 No data in this category.")
             continue
+
         sub_samp = random.sample(arr, min(num_samp, len(arr)))
         for i, obj in enumerate(sub_samp, 1):
             with st.expander(f"[{cat}] Sample #{i}", expanded=True):
@@ -1060,22 +1091,43 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
 
                 st.write(obj["text"])
 
-                # Let user assign to a group:
-                id = obj["id"]
-                dict_key = (id, variable)
-                assigned_grp_ = st.session_state.open_coding_assignments.get(dict_key, "Unassigned")
-                grp_list = ["Unassigned"] + [g["name"] for g in st.session_state.open_coding_groups]
-                if assigned_grp_ not in grp_list:
-                    assigned_grp_ = "Unassigned"
-                new_sel = st.selectbox(
-                    "Assign to group:",
-                    options=grp_list,
-                    index=grp_list.index(assigned_grp_),
-                    key=f"sample_{cat}_{i}"
-                )
-                st.session_state.open_coding_assignments[dict_key] = new_sel
+                # Let user assign BOTH primary and secondary code
+                dict_key = (obj["id"], variable)
+                if dict_key not in st.session_state.open_coding_assignments:
+                    st.session_state.open_coding_assignments[dict_key] = {
+                        "primary_code": "unassigned",
+                        "secondary_code": "unassigned"
+                    }
 
-    # SINGLE button that both saves changes and reshuffles:
+                assigned_obj_ = st.session_state.open_coding_assignments[dict_key]
+                grp_list = ["unassigned"] + [g["name"] for g in st.session_state.open_coding_groups]
+
+                # Primary
+                st.write("**Primary Code**:")
+                p_current = assigned_obj_.get("primary_code", "unassigned")
+                if p_current not in grp_list:
+                    p_current = "unassigned"
+                new_p = st.selectbox(
+                    f"Assign primary code (Sample {i})",
+                    options=grp_list,
+                    index=grp_list.index(p_current) if p_current in grp_list else 0,
+                    key=f"sample_{cat}_{i}_primary"
+                )
+                assigned_obj_["primary_code"] = new_p
+
+                # Secondary
+                st.write("**Secondary Code**:")
+                s_current = assigned_obj_.get("secondary_code", "unassigned")
+                if s_current not in grp_list:
+                    s_current = "unassigned"
+                new_s = st.selectbox(
+                    f"Assign secondary code (Sample {i})",
+                    options=grp_list,
+                    index=grp_list.index(s_current) if s_current in grp_list else 0,
+                    key=f"sample_{cat}_{i}_secondary"
+                )
+                assigned_obj_["secondary_code"] = new_s
+
     if st.button("🎲 Save and Shuffle"):
         ok = update_coded_assignments(variable, final_df, df_updated=None)
         if ok:
@@ -1094,11 +1146,15 @@ def generate_word_freq(texts, exact_words=200):
     """
     Process a list of strings, return the top N (exact_words) list of (word, freq).
     If fewer than exact_words are available, return all of them.
+
+    Now we identify and remove duplicate cleaned texts before merging,
+    so that the same processed line doesn't get counted multiple times.
     """
     cleaned_texts = []
     for txt in texts:
         if isinstance(txt, str) and txt.strip():
-            # Make sure you have 'process_text' defined somewhere
+            # This assumes you have a function 'process_text' defined
+            # that returns a cleaned string (or empty if nothing left).
             proc = process_text(
                 txt,
                 st.session_state.custom_stopwords,
@@ -1106,6 +1162,11 @@ def generate_word_freq(texts, exact_words=200):
             )
             if proc:
                 cleaned_texts.append(proc)
+
+    # Remove duplicates from cleaned_texts while preserving the order
+    # (dict.fromkeys(...) trick for Python 3.6+)
+    cleaned_texts = list(dict.fromkeys(cleaned_texts))
+
     if not cleaned_texts:
         return []
 
@@ -1208,16 +1269,11 @@ def render_wordclouds(var_resps, var_name="open_var"):
     """
     Renders multiple tabs of wordcloud outputs (Static, Interactive, etc.)
     and includes the variable name in downloaded filenames.
-
-    Changes:
-      1) Adds a slider to update the size of the mask icon (in pixels).
-      2) Allows the user to choose whether to show the actual icon behind the words
-         (by overlaying the wordcloud in front).
     """
 
     layout_choice = st.selectbox("Number of quadrants", [1, 2, 3, 4], index=0)
-
     groups_available = sorted(list(var_resps.keys()))
+
     quadrant_selections = {}
     for q_idx in range(layout_choice):
         quadrant_label = f"Quadrant {chr(65 + q_idx)}"
@@ -1235,6 +1291,7 @@ def render_wordclouds(var_resps, var_name="open_var"):
         step=10
     )
 
+    # For overall coloring if no highlight scheme is used
     color_schemes = [
         "viridis", "plasma", "inferno", "magma", "cividis", "winter",
         "coolwarm", "bone", "terrain", "twilight"
@@ -1244,6 +1301,7 @@ def render_wordclouds(var_resps, var_name="open_var"):
     highlight_input = st.text_area("Highlight words (one per line)", "")
     highlight_set = {h.strip().lower() for h in highlight_input.split('\n') if h.strip()}
 
+    # Combine text for each quadrant
     quadrant_texts = {}
     for quad_label, cat_list in quadrant_selections.items():
         combined_texts = []
@@ -1251,16 +1309,19 @@ def render_wordclouds(var_resps, var_name="open_var"):
             combined_texts.extend(var_resps[cat])
         quadrant_texts[quad_label] = combined_texts
 
+    # Check if there's data
     nonempty_quadrants = any(len(txts) > 0 for txts in quadrant_texts.values())
     if not nonempty_quadrants:
         st.warning("No groups selected or no data to show.")
         return
 
+    # Generate frequencies for each quadrant
     quadrant_freqs = {}
     for quad_label, txt_list in quadrant_texts.items():
         freq_ = generate_word_freq(txt_list, exact_words=exact_words)
         quadrant_freqs[quad_label] = freq_
 
+    # Prepare CSV download
     all_quadrants_freq = []
     for quad_label, freq_dat in quadrant_freqs.items():
         for w, f_ in freq_dat:
@@ -1268,116 +1329,90 @@ def render_wordclouds(var_resps, var_name="open_var"):
     df_all_quadrants_freq = pd.DataFrame(all_quadrants_freq, columns=["Quadrant", "Word", "Frequency"])
     csv_all_freq = df_all_quadrants_freq.to_csv(index=False).encode('utf-8')
 
-    tabs = st.tabs(["📸 Static", "🔄 Interactive"])
+    # Let user decide if they want per-quadrant formatting or single shared settings
+    use_unified_formatting = st.checkbox("Use the same 'Advanced' formatting for all quadrants?", value=True)
 
-    ###############################################################################
-    # TAB 0: STATIC WORDCLOUD
-    ###############################################################################
-    with tabs[0]:
-        with st.expander("Advanced Static Wordcloud Formatting"):
+    # A helper to collect advanced settings
+    def collect_advanced_settings(quad_label=None):
+        """Return a dictionary of advanced settings for one quadrant (or a shared set)."""
+        label_txt = f"Quadrant {quad_label} Formatting" if quad_label else "Advanced Formatting (shared)"
+        with st.expander(label_txt):
             spiral_type = st.selectbox(
                 "Shape Type",
                 ["archimedean", "rectangular", "default"],
                 index=0
             )
 
-            use_gradient = st.checkbox("Apply gradient color by frequency (based on chosen colormap)?")
+            use_gradient = st.checkbox("Apply gradient color by frequency (based on chosen colormap)?", value=False)
 
-            use_custom_freq_colors = st.checkbox("Use custom ascending color from min to max frequency?")
+            use_custom_freq_colors = st.checkbox("Use custom ascending color from min to max frequency?", value=False)
             low_freq_color = "#D3D3D3"
             high_freq_color = "#000000"
             if use_custom_freq_colors:
                 low_freq_color = st.color_picker("Low frequency color", value="#D3D3D3")
                 high_freq_color = st.color_picker("High frequency color", value="#000000")
 
-            # --------------------------------------------------------------------------------
-            # DYNAMIC MASK LOADING
-            # --------------------------------------------------------------------------------
-            import os
+            # Masks folder
             masks_dir = "masks"
-            mask_files = []
-            if os.path.isdir(masks_dir):
-                mask_files = [f for f in os.listdir(masks_dir) if f.lower().endswith(".png")]
-
+            mask_files = [f for f in os.listdir(masks_dir) if f.lower().endswith(".png")] if os.path.isdir(masks_dir) else []
             shape_options = ["None (no mask)", "Transparent Background (No Bounding Box)"] + mask_files
-            shape_option = st.selectbox("Wordcloud Shape", shape_options, index=0)
+            shape_option = st.selectbox("Wordcloud Shape (mask)", shape_options, index=0)
 
-            # Let user pick an icon size if shape_option is a PNG
-            icon_size = 1000
+            region_option = None
             show_icon_behind = False
+            icon_size = 500  # default smaller so it's not so large
             if shape_option not in ("None (no mask)", "Transparent Background (No Bounding Box)"):
                 region_option = st.radio(
                     "Fill words:",
                     ["Inside the black icon", "Outside (in the white region)"],
                     index=0
                 )
-                icon_size = st.slider("Pixelation", min_value=300, max_value=2000, value=1000, step=100)
+                icon_size = st.slider("Mask Pixelation/Size", min_value=200, max_value=2000, value=500, step=100)
                 show_icon_behind = st.checkbox("Show actual icon behind words?", value=False)
-            else:
-                region_option = None
 
-            contour_checkbox = st.checkbox("Add a contour around words?")
-            contour_color = st.color_picker("Contour color", value="#000000")
+            contour_checkbox = st.checkbox("Add a contour around words?", value=False)
+            contour_color = st.color_picker("Contour color", value="#000000") if contour_checkbox else "#000000"
 
+        return {
+            "spiral_type": spiral_type,
+            "use_gradient": use_gradient,
+            "use_custom_freq_colors": use_custom_freq_colors,
+            "low_freq_color": low_freq_color,
+            "high_freq_color": high_freq_color,
+            "shape_option": shape_option,
+            "region_option": region_option,
+            "show_icon_behind": show_icon_behind,
+            "icon_size": icon_size,
+            "contour_checkbox": contour_checkbox,
+            "contour_color": contour_color,
+        }
+
+    if use_unified_formatting:
+        # Collect once and reuse
+        shared_format = collect_advanced_settings()
+        quad_formatting = {q_label: shared_format for q_label in quadrant_freqs.keys()}
+    else:
+        # Collect for each quadrant individually
+        quad_formatting = {}
+        for q_label in quadrant_freqs.keys():
+            quad_formatting[q_label] = collect_advanced_settings(quad_label=q_label)
+
+    tabs = st.tabs(["📸 Static", "🔄 Interactive"])
+
+    # ----------------------------------------------------------------------------------------
+    # TAB 0: STATIC WORDCLOUD
+    # ----------------------------------------------------------------------------------------
+    with tabs[0]:
+
+        # Because each quadrant can differ, we'll build subplots accordingly
         fig_cols = 2 if layout_choice > 1 else 1
         fig_rows = (layout_choice + 1) // 2 if layout_choice > 2 else (1 if layout_choice < 3 else 2)
+
+        # Increase figure size slightly but rely on large WordCloud resolution to keep clarity
         fig = plt.figure(figsize=(8 * fig_cols, 6 * fig_rows))
         gs = fig.add_gridspec(fig_rows, fig_cols)
 
-        import numpy as np
-        mask = None
-        transparent_bg = False
-        icon_img = None
-
-        # --------------------------------------------------------------------------------
-        # BUILD THE MASK IF NEEDED
-        # --------------------------------------------------------------------------------
-        if shape_option == "Transparent Background (No Bounding Box)":
-            transparent_bg = True
-
-        elif shape_option not in ("None (no mask)", "Transparent Background (No Bounding Box)"):
-            from PIL import Image
-
-            try:
-                mask_path = os.path.join(masks_dir, shape_option)
-                # Load original icon
-                loaded_icon = Image.open(mask_path).convert("RGBA")
-
-                # Resize up or down to "icon_size" x "icon_size"
-                loaded_icon = loaded_icon.resize((icon_size, icon_size), Image.LANCZOS)
-
-                # Keep a copy for optional behind-words display
-                icon_img = loaded_icon.copy()
-
-                # Merge alpha with white background
-                white_bg = Image.new("RGBA", loaded_icon.size, "WHITE")
-                merged_img = Image.alpha_composite(white_bg, loaded_icon)
-
-                # Convert to numpy array
-                mask_array = np.array(merged_img)
-
-                # Threshold for "black"
-                rgb_sum = mask_array[..., :3].sum(axis=-1)
-                threshold = 40
-
-                if region_option == "Outside (in the white region)":
-                    mask = np.where(rgb_sum < threshold, 255, 0).astype(np.uint8)
-                else:
-                    mask = np.where(rgb_sum < threshold, 0, 255).astype(np.uint8)
-
-                ratio_unmasked = (mask > 0).sum() / float(mask.size)
-                if ratio_unmasked < 0.05:
-                    st.warning(
-                        "Warning: More than 95% of the area is masked. "
-                        "You might get 'Couldn't find space to draw' errors. "
-                        "Consider decreasing your threshold or increasing icon size."
-                    )
-            except Exception as e:
-                st.warning(f"Could not load or process {shape_option} from 'masks' folder: {e}")
-                mask = None
-                icon_img = None
-
-        # Helper function for blending two hex colors
+        # We'll define a color blender to handle custom freq colors
         def blend_hex_colors(hex1, hex2, t):
             def hex_to_rgb(hx):
                 hx = hx.lstrip('#')
@@ -1395,11 +1430,26 @@ def render_wordclouds(var_resps, var_name="open_var"):
             col_ = idx % fig_cols
             ax_ = fig.add_subplot(gs[row_, col_])
 
+            # Grab the advanced settings for this quadrant
+            fmt = quad_formatting[quad_label]
+            shape_option = fmt["shape_option"]
+            region_option = fmt["region_option"]
+            show_icon_behind = fmt["show_icon_behind"]
+            icon_size = fmt["icon_size"]
+            contour_checkbox = fmt["contour_checkbox"]
+            contour_color = fmt["contour_color"]
+            use_gradient = fmt["use_gradient"]
+            use_custom_freq_colors = fmt["use_custom_freq_colors"]
+            low_freq_color = fmt["low_freq_color"]
+            high_freq_color = fmt["high_freq_color"]
+            spiral_type = fmt["spiral_type"]
+
             if freq_dat:
                 freq_dict = dict(freq_dat)
                 max_count = max(freq_dict.values()) if freq_dict else 1
                 min_count = min(freq_dict.values()) if freq_dict else 0
 
+                # Decide how the colors are assigned
                 if use_custom_freq_colors:
                     def custom_asc_color_func(word, font_size, position, orientation, random_state=None, **kwargs):
                         f_ = freq_dict.get(word, 0)
@@ -1408,6 +1458,7 @@ def render_wordclouds(var_resps, var_name="open_var"):
                     wc_color_func = custom_asc_color_func
 
                 elif highlight_set and not use_gradient:
+                    # Non-gradient approach, highlight words in highlight_set
                     def color_func(word, *args, **kwargs):
                         return "rgb(68, 57, 131)" if word.lower() in highlight_set else "gray"
                     wc_color_func = color_func
@@ -1430,15 +1481,57 @@ def render_wordclouds(var_resps, var_name="open_var"):
                         return f"rgb({int(r * 255)}, {int(g * 255)}, {int(b * 255)})"
                     wc_color_func = random_cmap_color_func
 
+                # Build the mask (if any)
+                mask = None
+                transparent_bg = False
+                icon_img = None
+
+                if shape_option == "Transparent Background (No Bounding Box)":
+                    transparent_bg = True
+                elif shape_option not in ("None (no mask)", "Transparent Background (No Bounding Box)"):
+                    try:
+                        mask_path = os.path.join("masks", shape_option)
+                        loaded_icon = Image.open(mask_path).convert("RGBA")
+                        # Resize icon
+                        loaded_icon = loaded_icon.resize((icon_size, icon_size), Image.LANCZOS)
+                        icon_img = loaded_icon.copy()
+
+                        # Merge alpha with white background so we can threshold
+                        white_bg = Image.new("RGBA", loaded_icon.size, "WHITE")
+                        merged_img = Image.alpha_composite(white_bg, loaded_icon)
+
+                        mask_array = np.array(merged_img)
+                        # Threshold for "black"
+                        rgb_sum = mask_array[..., :3].sum(axis=-1)
+                        threshold = 40
+                        if region_option == "Outside (in the white region)":
+                            mask = np.where(rgb_sum < threshold, 255, 0).astype(np.uint8)
+                        else:
+                            mask = np.where(rgb_sum < threshold, 0, 255).astype(np.uint8)
+
+                        ratio_unmasked = (mask > 0).sum() / float(mask.size)
+                        if ratio_unmasked < 0.05:
+                            st.warning(
+                                f"Quadrant '{quad_label}' mask is very restrictive: "
+                                "More than 95% of the area is masked. "
+                                "You might get drawing errors."
+                            )
+                    except Exception as e:
+                        st.warning(f"Could not load or process {shape_option} from 'masks': {e}")
+                        mask = None
+                        icon_img = None
+
+                # Build the wordcloud with large resolution to avoid pixelation
                 wc_params = {
-                    "width": 800,
-                    "height": 600,
+                    "width": 1600,        # increased for higher default pixel resolution
+                    "height": 1200,       # increased for higher default pixel resolution
                     "collocations": False,
                     "max_words": exact_words,
                     "color_func": wc_color_func,
                     "mask": mask,
                     "contour_width": 5 if contour_checkbox else 0,
                     "contour_color": contour_color if contour_checkbox else None,
+                    "prefer_horizontal": 1.0,  # slightly preference for horizontal words
                 }
 
                 if transparent_bg:
@@ -1448,8 +1541,14 @@ def render_wordclouds(var_resps, var_name="open_var"):
                 else:
                     wc_params["background_color"] = "white"
 
+                # Optionally set the spiral type
+                if spiral_type in ["archimedean", "rectangular"]:
+                    wc_params["prefer_horizontal"] = 0.9 if spiral_type == "archimedean" else 0.8
+                    wc_params["collocation_threshold"] = 2
+
                 wc = WordCloud(**wc_params)
 
+                # Build text from frequencies
                 word_list = []
                 for w, f_ in freq_dat:
                     word_list.extend([w] * f_)
@@ -1458,16 +1557,22 @@ def render_wordclouds(var_resps, var_name="open_var"):
                 try:
                     wc.generate(joined_text)
 
-                    # -------------------------------------------
-                    # If user wants to see the icon behind words:
-                    # -------------------------------------------
-                    if show_icon_behind and icon_img is not None:
-                        # We'll show the background icon first,
-                        # then overlay the wordcloud.
-                        ax_.imshow(icon_img, interpolation='bilinear')
+                    # Convert the wordcloud to an RGBA image
+                    wc_img = wc.to_image()
 
-                    ax_.imshow(wc, interpolation='bilinear')
+                    # If user wants to show the icon behind words, alpha-composite them
+                    if show_icon_behind and icon_img is not None:
+                        # We'll ensure the background icon matches the WC size
+                        icon_img = icon_img.resize((wc_img.width, wc_img.height), Image.LANCZOS)
+                        # Alpha-composite: icon behind, then WC on top
+                        combined_img = Image.alpha_composite(icon_img, wc_img)
+                        ax_.imshow(combined_img, interpolation='bilinear')
+                    else:
+                        # Just show the wordcloud
+                        ax_.imshow(wc_img, interpolation='bilinear')
+
                     ax_.axis('off')
+
                 except ValueError as ve:
                     ax_.text(
                         0.5, 0.5,
@@ -1477,7 +1582,6 @@ def render_wordclouds(var_resps, var_name="open_var"):
                         fontsize=12,
                         color='red'
                     )
-
             else:
                 ax_.text(0.5, 0.5, "No data", ha='center', va='center', fontsize=14)
 
@@ -1493,8 +1597,7 @@ def render_wordclouds(var_resps, var_name="open_var"):
             data=buf.getvalue(),
             file_name=f"{var_name}_wordcloud_quadrants_static.png",
             mime="image/png",
-            use_container_width=True,
-            key="static_png_download"
+            use_container_width=True
         )
         plt.close(fig)
 
@@ -1503,18 +1606,17 @@ def render_wordclouds(var_resps, var_name="open_var"):
             data=csv_all_freq,
             file_name=f"{var_name}_wordcloud_quadrants_frequencies.csv",
             mime="text/csv",
-            use_container_width=True,
-            key="static_csv_download"
+            use_container_width=True
         )
 
-    ###############################################################################
+    # ----------------------------------------------------------------------------------------
     # TAB 1: INTERACTIVE WORDCLOUD
-    ###############################################################################
+    # ----------------------------------------------------------------------------------------
     with tabs[1]:
         rows_ = (layout_choice + 1) // 2 if layout_choice > 2 else (1 if layout_choice < 3 else 2)
         cols_ = 2 if layout_choice > 1 else 1
-
         fig_int = make_subplots(rows=rows_, cols=cols_, subplot_titles=None)
+
         idx = 1
         for quad_label, freq_dat in quadrant_freqs.items():
             row_ = (idx - 1) // cols_ + 1
@@ -1545,13 +1647,13 @@ def render_wordclouds(var_resps, var_name="open_var"):
         st.plotly_chart(fig_int, use_container_width=True)
 
         st.download_button(
-            label="📥 Download Frequencies CSV",
+            label="Download Frequencies CSV",
             data=csv_all_freq,
             file_name=f"{var_name}_wordcloud_quadrants_frequencies.csv",
             mime="text/csv",
-            use_container_width=True,
-            key="interactive_csv_download"
+            use_container_width=True
         )
+
 
 ###############################################################################
 # 8) WORD DIVE
@@ -1622,9 +1724,6 @@ def render_word_dive(chosen_var, rdict, open_var_options, grouping_columns):
             group_counts[sid] += len(sub_df[chosen_var].dropna())
 
     # Prepare data frames for analysis
-    # We'll build a table with columns: Group, CountContainsFocus, ProportionContainsFocus,
-    # Average FK, plus distribution data for F-K.
-    # Also store the text so we can do bigram/trigram analysis and random sampling.
     results = []
     distribution_data = []  # For box/violin plots of F-K
 
@@ -1780,7 +1879,6 @@ def render_word_dive(chosen_var, rdict, open_var_options, grouping_columns):
         st.markdown("### Most Common Bigrams/Trigrams Containing the Focus Term")
         top_n = st.slider("How many top bigrams/trigrams to show?", 5, 30, 10)
 
-        # We'll also make an optional bar chart for these.
         for grp_key, txts in group_texts.items():
             st.subheader(f"Group: {grp_key}")
             relevant = [t for t in txts if focus_term.lower() in t.lower()]
@@ -1788,11 +1886,24 @@ def render_word_dive(chosen_var, rdict, open_var_options, grouping_columns):
                 st.write("No responses contain the focus term.")
                 continue
 
-            # For the CountVectorizer, we can handle custom stopwords
-            # but let's keep it simple referencing st.session_state if needed
-            custom_stops = list(st.session_state.custom_stopwords) if "custom_stopwords" in st.session_state else None
+            # If you stored custom stopwords in SessionState:
+            custom_stops = None
+            if "custom_stopwords" in st.session_state:
+                custom_stops = list(st.session_state.custom_stopwords)
+
             vec = CountVectorizer(ngram_range=(2, 3), stop_words=custom_stops)
-            X = vec.fit_transform(relevant)
+
+            # --- FIX: Catch empty vocabulary to avoid ValueError ---
+            try:
+                X = vec.fit_transform(relevant)
+            except ValueError as e:
+                # Often "empty vocabulary; perhaps the documents only contain stop words"
+                st.warning(
+                    f"Skipping {grp_key} because we got an empty vocabulary. "
+                    "Check if all text is extremely short or all stop words."
+                )
+                continue
+
             freqs = X.sum(axis=0).A1
             vocab = vec.get_feature_names_out()
 
@@ -1810,7 +1921,6 @@ def render_word_dive(chosen_var, rdict, open_var_options, grouping_columns):
             df_ngrams = pd.DataFrame(top_ngrams, columns=["Ngram", "Frequency"])
             st.dataframe(df_ngrams, use_container_width=True)
 
-            # Optional bar chart
             fig_ngrams = px.bar(
                 df_ngrams,
                 x="Ngram",
@@ -2754,7 +2864,9 @@ st.title("📊 Text Analysis Dashboard")
 # SIDEBAR: FILE LOADER & ANALYSIS CHOICES
 # ----------------------------------------------------------------
 with st.sidebar:
+    st.title("📊 Text Analysis Dashboard")
     st.header("File / Data Selection")
+
     file_up = st.file_uploader("Upload Excel File", type=['xlsx'])
     if file_up and not st.session_state.file_processed:
         with st.spinner("Loading data..."):
@@ -2775,7 +2887,6 @@ with st.sidebar:
         var_opts = st.session_state.data['open_var_options']
         grp_cols = st.session_state.data['grouping_columns']
 
-        # Choose type of analysis
         st.markdown("---")
         st.markdown("**Choose Analysis**")
         analyses = [
@@ -2810,8 +2921,7 @@ with st.sidebar:
             chosen_var = None
 
         st.markdown("---")
-
-        # Group by
+        # Group-by (optional)
         if grp_cols:
             st.subheader("Group By")
             chosen_grp = st.selectbox("Group responses by", [None, "None"] + grp_cols, index=1)
@@ -2821,24 +2931,116 @@ with st.sidebar:
             chosen_grp = None
 
         st.markdown("---")
-
         # Stopwords manager
         render_stopwords_management()
 
         st.markdown("---")
-
         # Synonym manager
         render_synonym_groups_management()
 
         st.markdown("---")
+        # Group manager - NEW SECTION
+        st.subheader("Manage Coding Groups")
 
+        new_group_name = st.text_input("Group Name (new or existing)")
+        new_group_desc = st.text_input("Group Description")
+        if st.button("➕ Add / Update Group"):
+            gname = new_group_name.strip()
+            if gname:
+                # Check if group already exists
+                existing = next((g for g in st.session_state.open_coding_groups
+                                 if g['name'] == gname), None)
+                if existing:
+                    existing["desc"] = new_group_desc.strip()
+                    st.success(f"Updated group '{gname}'.")
+                else:
+                    st.session_state.open_coding_groups.append({
+                        "name": gname,
+                        "desc": new_group_desc.strip()
+                    })
+                    st.success(f"Created new group '{gname}'.")
+                save_coding_state()
+            else:
+                st.warning("Please enter a valid group name.")
+
+        all_group_names = [g["name"] for g in st.session_state.open_coding_groups]
+        if all_group_names:
+            delete_choice = st.selectbox("❌ Select a group to remove", ["(None)"] + all_group_names)
+            if delete_choice != "(None)":
+                if st.button(f"🗑️ Remove Group '{delete_choice}'"):
+                    # Remove from group list
+                    st.session_state.open_coding_groups = [
+                        g for g in st.session_state.open_coding_groups
+                        if g["name"] != delete_choice
+                    ]
+                    # Unassign any references in existing coded assignments
+                    for (k_id, k_var), vdict in list(st.session_state.open_coding_assignments.items()):
+                        # vdict is { "primary_code": X, "secondary_code": Y }
+                        if vdict.get("primary_code") == delete_choice:
+                            vdict["primary_code"] = "unassigned"
+                        if vdict.get("secondary_code") == delete_choice:
+                            vdict["secondary_code"] = "unassigned"
+                    save_coding_state()
+                    st.success(f"Removed group '{delete_choice}'")
+                    st.rerun()
+
+        # Combine (merge) groups
+        with st.expander("Combine (Merge) Groups"):
+            groups_to_merge = st.multiselect(
+                "Select two or more groups to combine",
+                all_group_names
+            )
+            merged_group_name = st.text_input("New Merged Group Name")
+            merged_group_desc = st.text_input("Merged Group Description")
+
+            if st.button("Combine & Save"):
+                if len(groups_to_merge) < 2:
+                    st.warning("Please select at least two groups to combine.")
+                elif not merged_group_name.strip():
+                    st.warning("Please provide a valid name for the new group.")
+                else:
+                    for (some_id, some_var), valdict in list(st.session_state.open_coding_assignments.items()):
+                        # If the old group is in primary or secondary, rename it
+                        if valdict["primary_code"] in groups_to_merge:
+                            valdict["primary_code"] = merged_group_name.strip()
+                        if valdict["secondary_code"] in groups_to_merge:
+                            valdict["secondary_code"] = merged_group_name.strip()
+
+                    # Remove old groups
+                    st.session_state.open_coding_groups = [
+                        g for g in st.session_state.open_coding_groups
+                        if g["name"] not in groups_to_merge
+                    ]
+                    # Add the new merged group
+                    st.session_state.open_coding_groups.append({
+                        "name": merged_group_name.strip(),
+                        "desc": merged_group_desc.strip()
+                    })
+
+                    if save_coding_state():
+                        st.success(f"Merged {groups_to_merge} into '{merged_group_name.strip()}' successfully.")
+                        st.rerun()
+                    else:
+                        st.error("Error saving after merging groups.")
+
+        # Expander to show current groups and descriptions
+        with st.expander("View Existing Groups", expanded=False):
+            if st.session_state.open_coding_groups:
+                df_groups = pd.DataFrame(st.session_state.open_coding_groups)
+                st.dataframe(df_groups, use_container_width=True)
+            else:
+                st.info("No coding groups defined yet.")
+
+        st.markdown("---")
         # Refresh button
         if st.button("🔄 Refresh All"):
             st.session_state.file_processed = False
             st.rerun()
+
     else:
         chosen_var = None
         chosen_grp = None
+
 
 # ----------------------------------------------------------------
 # MAIN CONTENT

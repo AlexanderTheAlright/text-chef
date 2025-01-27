@@ -5,8 +5,8 @@ id,variable,primary_code,secondary_code
 12554141.0,abilities_open,unassigned,unassigned
 12600902.0,abilities_open,unassigned,unassigned
 12523408.0,abilities_open,test,unassigned
-12523544.0,abilities_open,test,unassigned
-12524246.0,abilities_open,test,unassigned
+12523544.0,abilities_open,unassigned,unassigned
+12524246.0,abilities_open,unassigned,unassigned
 12525199.0,abilities_open,unassigned,unassigned
 12525401.0,abilities_open,unassigned,unassigned
 12525419.0,abilities_open,unassigned,unassigned
@@ -1336,7 +1336,7 @@ id,variable,primary_code,secondary_code
 12554141,abilities_open,unassigned,unassigned
 12600902,abilities_open,unassigned,unassigned
 12523408,abilities_open,test,unassigned
-12523544,abilities_open,test,unassigned
+12523544,abilities_open,unassigned,unassigned
 12524246,abilities_open,unassigned,unassigned
 12525199,abilities_open,unassigned,unassigned
 12525401,abilities_open,unassigned,unassigned
