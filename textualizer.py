@@ -1410,44 +1410,89 @@ def render_wordclouds(var_resps, var_name="open_var"):
 
     # A helper to collect advanced settings
     def collect_advanced_settings(quad_label=None):
-        """Return a dictionary of advanced settings for one quadrant (or a shared set)."""
+        """
+        Return a dictionary of advanced settings for one quadrant (or shared).
+        Add unique keys so Streamlit won't raise 'StreamlitDuplicateElementId'.
+        """
         label_txt = f"Quadrant {quad_label} Formatting" if quad_label else "Advanced Formatting (shared)"
         with st.expander(label_txt):
             spiral_type = st.selectbox(
-                "Shape Type",
+                f"Shape Type - {quad_label}",
                 ["archimedean", "rectangular", "default"],
-                index=0
+                index=0,
+                key=f"spiral_type_{quad_label}"
             )
 
-            use_gradient = st.checkbox("Apply gradient color by frequency (based on chosen colormap)?", value=False)
+            use_gradient = st.checkbox(
+                "Apply gradient color by frequency?",
+                value=False,
+                key=f"use_gradient_{quad_label}"
+            )
 
-            use_custom_freq_colors = st.checkbox("Use custom ascending color from min to max frequency?", value=False)
+            use_custom_freq_colors = st.checkbox(
+                "Use custom ascending color for frequencies?",
+                value=False,
+                key=f"use_custom_freq_colors_{quad_label}"
+            )
+
             low_freq_color = "#D3D3D3"
             high_freq_color = "#000000"
             if use_custom_freq_colors:
-                low_freq_color = st.color_picker("Low frequency color", value="#D3D3D3")
-                high_freq_color = st.color_picker("High frequency color", value="#000000")
+                low_freq_color = st.color_picker(
+                    "Low frequency color",
+                    value="#D3D3D3",
+                    key=f"low_freq_color_{quad_label}"
+                )
+                high_freq_color = st.color_picker(
+                    "High frequency color",
+                    value="#000000",
+                    key=f"high_freq_color_{quad_label}"
+                )
 
-            # Masks folder
-            masks_dir = "masks"
-            mask_files = [f for f in os.listdir(masks_dir) if f.lower().endswith(".png")] if os.path.isdir(masks_dir) else []
-            shape_options = ["None (no mask)", "Transparent Background (No Bounding Box)"] + mask_files
-            shape_option = st.selectbox("Wordcloud Shape (mask)", shape_options, index=0)
-
+            # Example mask options
+            shape_options = ["None (no mask)", "Transparent Background", "some_mask.png"]
+            shape_option = st.selectbox(
+                f"Wordcloud Shape (mask) - {quad_label}",
+                shape_options,
+                index=0,
+                key=f"shape_option_{quad_label}"
+            )
             region_option = None
             show_icon_behind = False
-            icon_size = 500  # default smaller so it's not so large
-            if shape_option not in ("None (no mask)", "Transparent Background (No Bounding Box)"):
+            icon_size = 500
+            if shape_option not in ("None (no mask)", "Transparent Background"):
                 region_option = st.radio(
-                    "Fill words:",
+                    f"Fill words inside or outside the icon - {quad_label}",
                     ["Inside the black icon", "Outside (in the white region)"],
-                    index=0
+                    index=0,
+                    key=f"region_option_{quad_label}"
                 )
-                icon_size = st.slider("Mask Pixelation/Size", min_value=200, max_value=2000, value=500, step=100)
-                show_icon_behind = st.checkbox("Show actual icon behind words?", value=False)
+                icon_size = st.slider(
+                    f"Mask Pixelation/Size - {quad_label}",
+                    min_value=200,
+                    max_value=2000,
+                    value=500,
+                    step=100,
+                    key=f"icon_size_{quad_label}"
+                )
+                show_icon_behind = st.checkbox(
+                    f"Show icon behind words - {quad_label}",
+                    value=False,
+                    key=f"show_icon_behind_{quad_label}"
+                )
 
-            contour_checkbox = st.checkbox("Add a contour around words?", value=False)
-            contour_color = st.color_picker("Contour color", value="#000000") if contour_checkbox else "#000000"
+            contour_checkbox = st.checkbox(
+                f"Add a contour around words? - {quad_label}",
+                value=False,
+                key=f"contour_checkbox_{quad_label}"
+            )
+            contour_color = "#000000"
+            if contour_checkbox:
+                contour_color = st.color_picker(
+                    f"Contour color - {quad_label}",
+                    value="#000000",
+                    key=f"contour_color_{quad_label}"
+                )
 
         return {
             "spiral_type": spiral_type,
@@ -3356,6 +3401,21 @@ if st.session_state.file_processed and chosen_var:
             for c_ in sorted(cluster_map.keys()):
                 indices_in_cluster = cluster_map[c_]
                 if not indices_in_cluster:
+                    continue
+
+                # Gather the documents in this cluster.
+                cluster_docs = [cleaned_txts[i] for i in indices_in_cluster if isinstance(cleaned_txts[i], str)]
+                cluster_docs = [doc.strip() for doc in cluster_docs if doc.strip()]
+
+                if not cluster_docs:
+                    st.warning(f"No valid documents in cluster {c_}. Skipping.")
+                    continue
+
+                # Safely call cvec.fit_transform to avoid "empty vocabulary" errors.
+                try:
+                    X_ = cvec.fit_transform(cluster_docs)
+                except ValueError as ve:
+                    st.warning(f"Skipping cluster {c_} due to error: {ve}")
                     continue
 
                 # A) Word frequencies for these docs
