@@ -178,9 +178,33 @@ def reset_stopwords_to_nltk():
         return False, f"Error: {e}"
 
 def render_stopwords_management():
-    """Render the stopwords manager in sidebar."""
-    st.markdown("#### Stopwords Management")
+    """Render the stopwords manager in sidebar, including a new 'Preview' section."""
+    # Keep a session-level set for preview stopwords (not saved to CSV)
+    if 'temp_preview_stopwords' not in st.session_state:
+        st.session_state.temp_preview_stopwords = set()
 
+    # -- NEW UI for preview stopwords --
+    st.markdown("#### Preview Stopwords")
+    preview_stops = st.text_area("Add Preview Stopwords (one per line)", key="preview_stopwords_input")
+    if st.button("Add Preview Stopwords"):
+        if preview_stops.strip():
+            words = [w.strip() for w in preview_stops.split('\n') if w.strip()]
+            words = normalize_stopword_set(words)  # normalize them just like permanent stops
+            st.session_state.temp_preview_stopwords = st.session_state.temp_preview_stopwords.union(words)
+            st.success(
+                f"Preview stopwords added (not saved permanently). "
+                f"Current preview set size: {len(st.session_state.temp_preview_stopwords)}"
+            )
+        else:
+            st.warning("No preview stopwords given.")
+
+    if st.button("Clear Preview Stopwords"):
+        st.session_state.temp_preview_stopwords.clear()
+        st.success("Preview stopwords cleared.")
+
+    st.markdown("#### Permanent Stopwords")
+
+    # -- Existing UI for permanently adding stopwords --
     new_stops = st.text_area("Add Stopwords (one per line)", key="new_stopwords_input")
     if st.button("Add Stopwords"):
         if new_stops.strip():
@@ -217,6 +241,8 @@ def render_stopwords_management():
             st.success(msg)
         else:
             st.error(msg)
+
+    st.markdown("---")
 
 def get_cmap_fixed(name):
     """
@@ -457,7 +483,10 @@ def get_responses_for_variable(dfs_dict, var, group_by=None):
         # If 'id' doesn't exist, we can't do assignment lookups
         has_id_col = ('id' in df.columns)
 
-        if group_by and all(gb in (df.columns or []) or gb in ['primary_code','secondary_code'] for gb in group_by):
+        if group_by and all(
+                (gb in df.columns) or (gb in ['primary_code', 'secondary_code'])
+                for gb in group_by
+        ):
             # Group by multiple columns (including possible 'primary_code','secondary_code')
             for col in matching_cols:
                 sub_df = df[[col] + (group_by if not has_id_col else group_by + ['id'])].copy()
@@ -583,36 +612,54 @@ def build_var_resps_for_multiselect(
 ###############################################################################
 
 def process_text(text, stopwords=None, synonym_groups=None):
-    """Basic cleaning + optional synonyms. Already used in wordcloud functions."""
+    """Clean text, remove stopwords, and apply synonyms.
+       If any word in a synonym group is in stopwords, remove that entire group."""
     if pd.isna(text) or not isinstance(text, str):
         return ""
-    txt = str(text).lower().strip()
 
+    # Basic cleaning
+    txt = str(text).lower().strip()
     txt = re.sub(r'<[^>]+>', '', txt)
     txt = re.sub(r'[^\w\s]', ' ', txt)
     txt = re.sub(r'\s+', ' ', txt).strip()
 
     words = txt.split()
 
-    # stopwords
-    if stopwords:
-        words = [w for w in words if w not in stopwords]
+    # 1) Combine permanent + preview stopwords
+    effective_stopwords = set(stopwords) if stopwords else set()
+    if 'temp_preview_stopwords' in st.session_state and st.session_state.temp_preview_stopwords:
+        effective_stopwords |= st.session_state.temp_preview_stopwords
 
-    # synonyms
+    # 2) Identify entire synonym groups to remove if any synonym is in stopwords
+    synonyms_to_remove = set()
     if synonym_groups:
-        replaced_words = []
-        for w in words:
-            replaced = False
+        for gname, synset in synonym_groups.items():
+            # If this group's synonyms intersect with stopwords => remove them all
+            if synset.intersection(effective_stopwords):
+                synonyms_to_remove |= synset  # add all synonyms in that group
+
+    # 3) Filter out words that are in synonyms_to_remove OR in effective_stopwords
+    new_words = []
+    for w in words:
+        # If w is in the "to_remove" set or in the final stopwords, skip it
+        if w in synonyms_to_remove or w in effective_stopwords:
+            continue
+
+        # Otherwise, see if it belongs to a synonym group
+        replaced = False
+        if synonym_groups:
             for gname, synset in synonym_groups.items():
                 if w in synset:
-                    replaced_words.append(gname)
+                    # Replace w with group name
+                    new_words.append(gname)
                     replaced = True
                     break
-            if not replaced:
-                replaced_words.append(w)
-        words = replaced_words
 
-    return ' '.join(words)
+        # If no synonym found, keep original word
+        if not replaced:
+            new_words.append(w)
+
+    return ' '.join(new_words)
 
 
 ###############################################################################
@@ -1188,37 +1235,21 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
 ################################################################################
 
 def generate_word_freq(texts, exact_words=200):
-    """
-    Process a list of strings, return the top N (exact_words) list of (word, freq).
-    If fewer than exact_words are available, return all of them.
-
-    Now we identify and remove duplicate cleaned texts before merging,
-    so that the same processed line doesn't get counted multiple times.
-    """
-    cleaned_texts = []
+    processed_texts = []
     for txt in texts:
-        if isinstance(txt, str) and txt.strip():
-            # This assumes you have a function 'process_text' defined
-            # that returns a cleaned string (or empty if nothing left).
-            proc = process_text(
-                txt,
-                st.session_state.custom_stopwords,
-                st.session_state.synonym_groups
-            )
-            if proc:
-                cleaned_texts.append(proc)
+        cleaned_txt = process_text(
+            txt,
+            stopwords=st.session_state.custom_stopwords,  # Pass permanent stops...
+            synonym_groups=st.session_state.synonym_groups
+        )
+        if cleaned_txt:
+            processed_texts.append(cleaned_txt)
 
-    # Remove duplicates from cleaned_texts while preserving the order
-    # (dict.fromkeys(...) trick for Python 3.6+)
-    cleaned_texts = list(dict.fromkeys(cleaned_texts))
-
-    if not cleaned_texts:
-        return []
-
-    merged = ' '.join(cleaned_texts)
+    # Build frequency data from processed_texts
+    merged = " ".join(processed_texts)
     freq_counter = Counter(merged.split())
-    most_common = freq_counter.most_common(exact_words)
-    return most_common
+    return freq_counter.most_common(exact_words)
+
 
 
 def generate_interactive_wordcloud(freq_data, highlight_words=None, title='', exact_words=200, colormap='viridis'):
@@ -3243,85 +3274,57 @@ if st.session_state.file_processed and chosen_var:
         st.markdown("## 🔍 Topic Discovery")
 
         # ------------------------------------------------------------
-
         # FIRST: 3D Topic Visualization
-
         # ------------------------------------------------------------
 
         st.subheader("3D Topic Visualization")
 
         # Combine all responses for the chosen variable into a single DataFrame
-
         combined_rows = []
-
         for sid, dfx in rdict.items():
-
             if chosen_var in dfx.columns:
-
                 sub_df = dfx[[chosen_var]].copy()
-
                 sub_df["surveyid"] = sid
 
                 # If user has columns like id, age, etc., include them if they exist:
-
                 for extra_col in ["id", "age", "gender", "region", "jobtitle"]:
-
                     if extra_col in dfx.columns:
                         sub_df[extra_col] = dfx[extra_col]
 
                 # Filter out NaNs
-
                 sub_df.dropna(subset=[chosen_var], inplace=True)
-
                 sub_df = sub_df[sub_df[chosen_var].astype(str).str.strip() != ""]
 
                 combined_rows.append(sub_df)
 
         if combined_rows:
-
             big_df_3d = pd.concat(combined_rows, ignore_index=True)
-
             big_df_3d.rename(columns={chosen_var: "open_response"}, inplace=True)
 
             fig_3d = create_3d_topic_visualization(
-
                 df=big_df_3d,
-
                 text_col="open_response",
-
                 jobtitle_col="jobtitle",
-
                 age_col="age",
-
                 gender_col="gender",
-
                 region_col="region",
-
                 model_name='all-MiniLM-L6-v2',
-
                 n_components=3,
-
                 n_clusters=5,
-
                 random_state=42
-
             )
 
             if fig_3d is not None:
-
                 st.plotly_chart(fig_3d, use_container_width=True)
-
             else:
-
                 st.warning("Not enough valid text data for 3D topic visualization.")
-
         else:
-
             st.warning("No valid responses to display in 3D topic visualization.")
 
         # ------------------------------------------------------------
-        # SECOND: Simple K-Means or other clustering overview
+        # SECOND: Simple K-Means (or similar) Clustering Overview + Representative Docs
         # ------------------------------------------------------------
+
         st.subheader("Topic Clusters Overview")
         num_topics = st.slider("Number of Topics (K)", 2, 10, 4)
         min_topic_size = st.slider("Min Topic Size (unused for basic KMeans)", 2, 5, 2)
@@ -3334,31 +3337,60 @@ if st.session_state.file_processed and chosen_var:
                 st.warning("Not enough data (<20) to do topic modeling.")
                 continue
 
+            # 1) Embed all texts
             embeddings_ = emb_model.encode(cleaned_txts, show_progress_bar=False)
+
+            # 2) K-Means
             kmeans_ = KMeans(n_clusters=num_topics, random_state=42).fit(embeddings_)
 
             from collections import defaultdict
-
             cluster_map = defaultdict(list)
-            for doc_, lbl_ in zip(cleaned_txts, kmeans_.labels_):
-                cluster_map[lbl_].append(doc_)
 
+            # 3) Collect cluster -> list of doc indices (and doc texts)
+            for idx, lbl_ in enumerate(kmeans_.labels_):
+                cluster_map[lbl_].append(idx)
+
+            # 4) Build table data
             stats_list = []
             cvec = CountVectorizer(max_features=10, stop_words=list(st.session_state.custom_stopwords))
+
             for c_ in sorted(cluster_map.keys()):
-                group_docs = cluster_map[c_]
-                if not group_docs:
+                indices_in_cluster = cluster_map[c_]
+                if not indices_in_cluster:
                     continue
-                X_ = cvec.fit_transform(group_docs)
+
+                # A) Word frequencies for these docs
+                cluster_docs = [cleaned_txts[i] for i in indices_in_cluster]
+                X_ = cvec.fit_transform(cluster_docs)
                 w_ = cvec.get_feature_names_out()
                 fr_ = X_.sum(axis=0).A1
                 top_ = sorted(zip(w_, fr_), key=lambda x: x[1], reverse=True)[:5]
+                top_terms = ", ".join([t[0] for t in top_])
+
+                # B) Identify top 3 representative docs (closest to centroid)
+                center = kmeans_.cluster_centers_[c_]
+                distances = []
+                for doc_idx in indices_in_cluster:
+                    dist = np.linalg.norm(embeddings_[doc_idx] - center)
+                    distances.append((dist, doc_idx))
+                distances.sort(key=lambda x: x[0])
+                top_3_docs = [cleaned_txts[d[1]] for d in distances[:3]]
+                rep_docs_str = "\n\n".join(top_3_docs)
+
                 stats_list.append({
                     'Topic': c_,
-                    'Count': len(group_docs),
-                    'Top Terms': ", ".join([t[0] for t in top_])
+                    'Count': len(cluster_docs),
+                    'Top Terms': top_terms,
+                    'Representative Docs': rep_docs_str
                 })
-            st.dataframe(pd.DataFrame(stats_list), use_container_width=True)
+
+            # 5) Show final DataFrame with top terms + representative docs
+            if stats_list:
+                df_stats = pd.DataFrame(stats_list)
+                st.dataframe(df_stats, use_container_width=True)
+            else:
+                st.info(f"No clusters found for {group_name} or data was insufficient.")
+
 
     elif st.session_state.selected_analysis == "Sentiment Analysis":
 
