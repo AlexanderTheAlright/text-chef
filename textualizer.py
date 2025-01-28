@@ -80,11 +80,6 @@ if 'open_coding_assignments' not in st.session_state:
 if 'last_save_time' not in st.session_state:
     st.session_state.last_save_time = time.time()
 
-def auto_save_check():
-    """Auto-save every 5 min."""
-    if (time.time() - st.session_state.last_save_time) > 300:
-        save_coding_state()
-
 ###############################################################################
 # 2) STOPWORDS MANAGEMENT
 ###############################################################################
@@ -309,7 +304,11 @@ def render_synonym_groups_management():
 
 @st.cache_data
 def load_excel_file(excel, chosen_survey="All"):
-    """Load the question_mapping sheet + either chosen_survey or all sheets."""
+    """
+    Load the question_mapping sheet + either chosen_survey or all sheets,
+    then add 'primary_code'/'secondary_code' as valid grouping columns.
+    (No other functionality changed.)
+    """
     import pandas as pd
     import os
 
@@ -336,7 +335,7 @@ def load_excel_file(excel, chosen_survey="All"):
         'dk', 'dk.', 'd/k', 'd.k.', 'dont know', "don't know", "na", "n/a", "n.a.", "n/a.",
         'not applicable', 'none', 'nil', 'no response', 'no answer', '.', '-', 'x', 'refused', 'ref',
         'dk/ref', 'nan', 'NaN', 'NAN', '_dk_', '_na_', '___dk___', '___na___', '__dk__', '__na__',
-        '_____dk_____', '_____na_____', ''
+        '_____dk_____', '_____na_____',''
     }
 
     for sheet in sheets_to_load:
@@ -361,8 +360,7 @@ def load_excel_file(excel, chosen_survey="All"):
         responses_dict[sheet] = df
 
     # Instead of excluding _open columns from the grouping options,
-    # we now *include* them (plus any other columns).
-    # Remove only the .1 duplicates if you want.
+    # we keep them as well. Remove only the .1 duplicates if you want.
     grouping_cols = sorted(c for c in all_cols if not c.endswith('.1'))
 
     # Build "open_var_opts" from question_mapping
@@ -374,8 +372,16 @@ def load_excel_file(excel, chosen_survey="All"):
         else:
             open_var_opts[v] = v
 
-    return qmap, responses_dict, open_var_opts, grouping_cols
+    # -----------------------------------------------------------------
+    # NEW: Also allow 'primary_code' and 'secondary_code' as group-by
+    # -----------------------------------------------------------------
+    # So the user can group by the open-coding assignments from assignments.csv
+    if "primary_code" not in grouping_cols:
+        grouping_cols.append("primary_code")
+    if "secondary_code" not in grouping_cols:
+        grouping_cols.append("secondary_code")
 
+    return qmap, responses_dict, open_var_opts, grouping_cols
 
 # -----------------------------------------------------------
 # In your sidebar or wherever you choose "Group By":
@@ -411,12 +417,15 @@ def sidebar_controls(open_var_list, group_col_list):
 
 
 def get_responses_for_variable(dfs_dict, var, group_by=None):
+    """
+    Retrieve text responses for a single open variable, optionally grouped.
+    If 'primary_code' or 'secondary_code' is chosen as a grouping column,
+    we'll look up the assignment in st.session_state.open_coding_assignments.
+
+    Returns a dict {group_key -> list_of_texts}.
+    """
     import re
     from collections import defaultdict
-
-    # This function now accepts either a single string for 'group_by'
-    # or a list of columns (including multiple *_open columns if desired).
-    # If 'group_by' is None, all text entries are aggregated into one "All" group.
 
     out = defaultdict(list)
     pattern = f"^{re.escape(var)}(?:\\.1)?$"
@@ -425,25 +434,67 @@ def get_responses_for_variable(dfs_dict, var, group_by=None):
     if group_by and isinstance(group_by, str):
         group_by = [group_by]
 
+    # Check if we might need to look up codes
+    needs_primary = False
+    needs_secondary = False
+    if group_by:
+        needs_primary = ('primary_code' in group_by)
+        needs_secondary = ('secondary_code' in group_by)
+
+    # Ensure open_coding_assignments is loaded
+    # The code that sets up st.session_state.open_coding_assignments
+    # typically runs in open coding or initialization. Make sure it's loaded:
+    if 'open_coding_assignments' not in st.session_state:
+        st.session_state.open_coding_assignments = {}
+
     for sid, df in dfs_dict.items():
         # Find columns that match var or var.1
         matching_cols = [c for c in df.columns if re.match(pattern, c, re.IGNORECASE)]
         if not matching_cols:
             continue
 
-        if group_by and all(gb in df.columns for gb in group_by):
-            # Group by multiple columns (or a single column, but in list form)
+        # We must ensure each row has an 'id' if we plan to do lookups
+        # If 'id' doesn't exist, we can't do assignment lookups
+        has_id_col = ('id' in df.columns)
+
+        if group_by and all(gb in (df.columns or []) or gb in ['primary_code','secondary_code'] for gb in group_by):
+            # Group by multiple columns (including possible 'primary_code','secondary_code')
             for col in matching_cols:
-                sub_df = df[[col] + group_by].dropna(subset=[col])
+                sub_df = df[[col] + (group_by if not has_id_col else group_by + ['id'])].copy()
+                sub_df.dropna(subset=[col], inplace=True)
+
                 for _, row in sub_df.iterrows():
                     text_val = str(row[col]).strip()
-                    if text_val.lower() != 'nan' and text_val != '':
-                        # Build a composite key from all group_by columns
-                        group_values = [str(row[gb]) for gb in group_by]
-                        group_key = "_".join(group_values)
-                        out[group_key].append(text_val)
+                    if text_val.lower() == 'nan' or text_val == '':
+                        continue
+
+                    row_id = str(row['id']) if (has_id_col and pd.notna(row['id'])) else ""
+
+                    # Retrieve assignment codes if needed
+                    p_code = "unassigned"
+                    s_code = "unassigned"
+                    if (needs_primary or needs_secondary) and row_id:
+                        assigned = st.session_state.open_coding_assignments.get((row_id, var), None)
+                        if assigned:
+                            p_code = assigned.get("primary_code", "unassigned")
+                            s_code = assigned.get("secondary_code", "unassigned")
+
+                    # Build a composite key from all group_by columns
+                    group_values = []
+                    for gb in group_by:
+                        if gb == 'primary_code':
+                            group_values.append(p_code)
+                        elif gb == 'secondary_code':
+                            group_values.append(s_code)
+                        else:
+                            val_ = row[gb]
+                            group_values.append(str(val_) if pd.notna(val_) else "Missing")
+
+                    group_key = "_".join(group_values)
+                    out[group_key].append(text_val)
+
         else:
-            # If no group_by or invalid group_by, unify everything into a single 'All' group
+            # If no valid group_by or invalid group_by, unify everything into a single 'All' group
             all_texts = []
             for col in matching_cols:
                 colvals = [
@@ -457,7 +508,6 @@ def get_responses_for_variable(dfs_dict, var, group_by=None):
     # Sort by descending number of responses
     out = dict(sorted(out.items(), key=lambda x: len(x[1]), reverse=True))
     return out
-
 
 def build_var_resps_for_multiselect(
         dfs_dict,
@@ -805,11 +855,6 @@ def update_coded_assignments(variable, final_df, df_updated=None):
     except Exception as e:
         st.error(f"Error saving coding: {e}")
         return False
-
-
-########################################
-# 5) RENDERING THE OPEN CODING INTERFACE
-########################################
 
 def render_open_coding_interface(variable, responses_dict, open_var_options, grouping_columns):
     """
