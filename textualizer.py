@@ -3010,7 +3010,6 @@ with st.sidebar:
         # Stopwords manager
         render_stopwords_management()
 
-        st.markdown("---")
         # Synonym manager
         render_synonym_groups_management()
 
