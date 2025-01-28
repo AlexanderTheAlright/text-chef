@@ -13,7 +13,6 @@ import os
 import time
 import re
 import random
-from functools import partial
 import nltk
 from nltk.corpus import stopwords
 from collections import Counter, defaultdict
@@ -28,7 +27,6 @@ from sklearn.manifold import TSNE
 from sklearn.feature_extraction.text import CountVectorizer
 from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from PIL import Image
 
 
@@ -278,7 +276,6 @@ def load_synonym_groups_from_csv(file='synonym_groups.csv'):
 
 def save_synonym_groups_to_csv(file='synonym_groups.csv'):
     """Save synonyms from session_state -> CSV."""
-    import csv
     rows = []
     for group_name, synonyms in st.session_state.synonym_groups.items():
         for syn in synonyms:
@@ -336,7 +333,6 @@ def load_excel_file(excel, chosen_survey="All"):
     (No other functionality changed.)
     """
     import pandas as pd
-    import os
 
     xls = pd.ExcelFile(excel)
     sheets = xls.sheet_names
@@ -3059,7 +3055,7 @@ with st.sidebar:
         render_synonym_groups_management()
 
         st.markdown("---")
-        # Group manager - NEW SECTION
+        # Group manager
         st.subheader("Manage Coding Groups")
 
         new_group_name = st.text_input("Group Name (new or existing)")
@@ -3152,6 +3148,7 @@ with st.sidebar:
                 st.info("No coding groups defined yet.")
 
         st.markdown("---")
+
         # Refresh button
         if st.button("🔄 Refresh All"):
             st.session_state.file_processed = False
