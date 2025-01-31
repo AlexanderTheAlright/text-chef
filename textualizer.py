@@ -496,13 +496,13 @@ def get_responses_for_variable(dfs_dict, var, group_by=None):
                     row_id = str(row['id']) if (has_id_col and pd.notna(row['id'])) else ""
 
                     # Retrieve assignment codes if needed
-                    p_code = "unassigned"
-                    s_code = "unassigned"
+                    p_code = "Unassigned"
+                    s_code = "Unassigned"
                     if (needs_primary or needs_secondary) and row_id:
                         assigned = st.session_state.open_coding_assignments.get((row_id, var), None)
                         if assigned:
-                            p_code = assigned.get("primary_code", "unassigned")
-                            s_code = assigned.get("secondary_code", "unassigned")
+                            p_code = assigned.get("primary_code", "Unassigned")
+                            s_code = assigned.get("secondary_code", "Unassigned")
 
                     # Build a composite key from all group_by columns
                     group_values = []
@@ -678,31 +678,20 @@ def auto_save_check():
         else:
             st.sidebar.warning("Auto-save attempted but failed.")
 
-
 def save_coding_state():
     """
-    Saves the group definitions + the coded assignments to disk,
-    plus optional time-stamped backup copies in 'coding_backups/'.
-    Ensures permanent storage of both group definitions and assignment data.
+    Saves the group definitions and the coded assignments to disk,
+    inside a 'cache/' folder (without creating extra backup files).
     """
     try:
+        os.makedirs('cache', exist_ok=True)
         # 1) Save group definitions
         if st.session_state.open_coding_groups:
-            save_open_coding_groups('assignment_groups.csv')
+            save_open_coding_groups('cache/groups.csv')
 
         # 2) Save open-coding assignments
         if st.session_state.open_coding_assignments:
-            save_open_coding_assignments('assignments.csv')
-
-        # 3) Also optional time-stamped backups
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        os.makedirs('coding_backups', exist_ok=True)
-
-        if st.session_state.open_coding_groups:
-            save_open_coding_groups(f"coding_backups/groups_{ts}.csv")
-
-        if st.session_state.open_coding_assignments:
-            save_open_coding_assignments(f"coding_backups/assignments_{ts}.csv")
+            save_open_coding_assignments('cache/assignments.csv')
 
         st.session_state.last_save_time = time.time()
         return True
@@ -711,35 +700,34 @@ def save_coding_state():
         st.error(f"Error saving coding state: {e}")
         return False
 
-
 def initialize_coding_state():
     """
     Ensure open coding data is loaded exactly once
     and we have placeholders in st.session_state for data.
     """
     if 'coding_initialized' not in st.session_state:
-        st.session_state.open_coding_groups = load_open_coding_groups()
-        st.session_state.open_coding_assignments = load_open_coding_assignments()
+        st.session_state.open_coding_groups = load_open_coding_groups('cache/groups.csv')
+        st.session_state.open_coding_assignments = load_open_coding_assignments('cache/assignments.csv')
         st.session_state.coding_initialized = True
 
     if 'open_coding_table_data' not in st.session_state:
         st.session_state.open_coding_table_data = {}  # dict {var -> final_df}
 
-def load_open_coding_groups(file='assignment_groups.csv'):
+def load_open_coding_groups(file='cache/groups.csv'):
     """
     Load group definitions from CSV -> st.session_state.open_coding_groups.
-    Each entry is expected as {"name": <group_name>, "desc": <group_description>}.
+    Each row expected: [name, desc].
     """
     if os.path.exists(file):
         try:
             df = pd.read_csv(file)
             return df.to_dict('records')
-        except:
-            pass
+        except Exception as e:
+            print(f"Could not load groups file: {e}")
+            return []
     return []
 
-
-def save_open_coding_groups(file='assignment_groups.csv'):
+def save_open_coding_groups(file='cache/groups.csv'):
     """
     Save the current open_coding_groups to CSV.
     Each row: name, desc
@@ -748,74 +736,42 @@ def save_open_coding_groups(file='assignment_groups.csv'):
     if not df_g.empty:
         df_g.to_csv(file, index=False)
 
-def load_open_coding_assignments(file='assignments.csv'):
-    """
-    Create or load an assignment CSV that uses columns:
-       [id, variable, primary_code, secondary_code].
-    We store them in st.session_state.open_coding_assignments as:
-       (id, var) -> {"primary_code": <str>, "secondary_code": <str>}.
 
-    If file doesn't exist or is empty, return an empty dict.
-
-    This function also tries to handle older columns (e.g. 'group',
-    'primary_group', 'secondary_group', or 'panelistid') by renaming them on load.
-    """
+def load_open_coding_assignments(file='cache/assignments.csv'):
     assignment_dict = {}
     if os.path.exists(file):
         try:
             df = pd.read_csv(file)
 
-            # Attempt to rename older columns to the new ones if needed
-            rename_map = {}
-
-            # If someone used "panelistid" instead of "id"
-            if "panelistid" in df.columns and "id" not in df.columns:
-                rename_map["panelistid"] = "id"
-
-            if "primary_group" in df.columns and "primary_code" not in df.columns:
-                rename_map["primary_group"] = "primary_code"
-            if "secondary_group" in df.columns and "secondary_code" not in df.columns:
-                rename_map["secondary_group"] = "secondary_code"
-            if "group" in df.columns and "primary_code" not in df.columns:
-                rename_map["group"] = "primary_code"
-
-            if rename_map:
-                df = df.rename(columns=rename_map)
-
-            # Ensure columns exist
-            for col in ["id", "variable", "primary_code", "secondary_code"]:
+            # Expect these columns, add them if they're missing
+            expected_cols = ["id", "surveyid", "variable", "primary_code", "secondary_code"]
+            for col in expected_cols:
                 if col not in df.columns:
                     df[col] = None
 
-            df = df[["id", "variable", "primary_code", "secondary_code"]]
-            df["primary_code"] = df["primary_code"].fillna("unassigned").astype(str)
-            df["secondary_code"] = df["secondary_code"].fillna("unassigned").astype(str)
+            # Fill missing codes with 'Unassigned'
+            df["primary_code"] = df["primary_code"].fillna("Unassigned").astype(str)
+            df["secondary_code"] = df["secondary_code"].fillna("Unassigned").astype(str)
 
             for _, row in df.iterrows():
-                key = (str(row["id"]), str(row["variable"]))
+                key = (str(row["id"]), str(row["surveyid"]), str(row["variable"]))
                 assignment_dict[key] = {
                     "primary_code": row["primary_code"],
                     "secondary_code": row["secondary_code"]
                 }
-
         except Exception as e:
-            print(f"[load_open_coding_assignments] Could not load '{file}': {e}")
-
+            print(f"Could not load assignments file: {e}")
     return assignment_dict
 
-
-def save_open_coding_assignments(file='assignments.csv'):
-    """
-    Writes out columns: [id, variable, primary_code, secondary_code].
-    Everything defaults to 'unassigned' if missing.
-    """
+def save_open_coding_assignments(file='cache/assignments.csv'):
     rows = []
-    for (row_id, var), codes in st.session_state.open_coding_assignments.items():
+    for (row_id, row_surveyid, row_var), codes in st.session_state.open_coding_assignments.items():
         rows.append({
             "id": row_id,
-            "variable": var,
-            "primary_code": codes.get("primary_code", "unassigned"),
-            "secondary_code": codes.get("secondary_code", "unassigned"),
+            "surveyid": row_surveyid,         # <--- newly added
+            "variable": row_var,
+            "primary_code": codes.get("primary_code", "Unassigned"),
+            "secondary_code": codes.get("secondary_code", "Unassigned"),
         })
     df = pd.DataFrame(rows)
     if not df.empty:
@@ -823,98 +779,85 @@ def save_open_coding_assignments(file='assignments.csv'):
 
 def update_coded_assignments(variable, final_df, df_updated=None):
     """
-    1) Merge user edits (df_updated) into st.session_state.open_coding_assignments.
-    2) Reflect those assignments into final_df under columns:
-         "primary_code", "primary_desc", "secondary_code", "secondary_desc".
-    3) Save to disk (via save_coding_state).
-    Returns True on success, False on error.
-
-    Ensures each row is matched by (row_id, variable) -> assignment info.
-    Also ensures the correct group description goes into primary_desc or
-    secondary_desc, drawn from st.session_state.open_coding_groups.
+    1) Merge user edits from df_updated into st.session_state.open_coding_assignments.
+    2) Keep final_df in the same row order/sorting that df_updated shows.
+    3) Re-populate 'primary_desc' and 'secondary_desc' from the dictionary.
+    4) Save everything to disk.
     """
-
-    # (A) Merge user edits from data_editor if provided
     if df_updated is not None and not df_updated.empty:
+        # STEP 1: Store user changes in assignment dictionary
         for i, row in df_updated.iterrows():
             row_id = str(row.get("id", ""))
-            dict_key = (row_id, variable)
+            survid = str(row.get("surveyid", ""))
+            dict_key = (row_id, survid, variable)
 
-            if dict_key not in st.session_state.open_coding_assignments:
+            p_val = row.get("primary_code", "Unassigned") or "Unassigned"
+            s_val = row.get("secondary_code", "Unassigned") or "Unassigned"
+
+            # Remove if both codes = "Unassigned"
+            if p_val == "Unassigned" and s_val == "Unassigned":
+                if dict_key in st.session_state.open_coding_assignments:
+                    del st.session_state.open_coding_assignments[dict_key]
+            else:
                 st.session_state.open_coding_assignments[dict_key] = {
-                    "primary_code": "unassigned",
-                    "secondary_code": "unassigned"
+                    "primary_code": p_val,
+                    "secondary_code": s_val
                 }
 
-            # Update session-state with new codes
-            p_val = row.get("primary_code", "unassigned") or "unassigned"
-            s_val = row.get("secondary_code", "unassigned") or "unassigned"
+        # STEP 2: Overwrite final_df's code columns with df_updated's codes (preserving the user order)
+        #         This ensures final_df stays in the same row order as df_updated
+        if "primary_code" in df_updated.columns and "primary_code" in final_df.columns:
+            final_df["primary_code"] = df_updated["primary_code"]
+        if "secondary_code" in df_updated.columns and "secondary_code" in final_df.columns:
+            final_df["secondary_code"] = df_updated["secondary_code"]
 
-            st.session_state.open_coding_assignments[dict_key]["primary_code"] = p_val
-            st.session_state.open_coding_assignments[dict_key]["secondary_code"] = s_val
-
-    # (B) Reflect assignments back into final_df
-    if not final_df.empty:
-        for idx_ in final_df.index:
-            row_ = final_df.loc[idx_]
-            row_id_ = str(row_.get("id", ""))
-            dict_key = (row_id_, variable)
+        # STEP 3: Re-generate primary_desc, secondary_desc using the assignment dictionary
+        for i, row in final_df.iterrows():
+            row_id_ = str(row.get("id", ""))
+            survid_ = str(row.get("surveyid", ""))
+            dict_key = (row_id_, survid_, variable)
 
             assigned_obj = st.session_state.open_coding_assignments.get(
-                dict_key,
-                {"primary_code": "unassigned", "secondary_code": "unassigned"}
+                dict_key, {"primary_code": "Unassigned", "secondary_code": "Unassigned"}
             )
 
-            final_df.at[idx_, "primary_code"] = assigned_obj.get("primary_code", "unassigned")
-            final_df.at[idx_, "secondary_code"] = assigned_obj.get("secondary_code", "unassigned")
-
-            # If desc columns exist, fill them accordingly
+            # If you have these columns, fill them in from your group definitions
             if "primary_desc" in final_df.columns:
-                if final_df.at[idx_, "primary_code"] != "unassigned":
-                    gobj_pri = next(
+                if assigned_obj["primary_code"] != "Unassigned":
+                    grp = next(
                         (g for g in st.session_state.open_coding_groups
-                         if g["name"] == final_df.at[idx_, "primary_code"]),
+                         if g["name"] == assigned_obj["primary_code"]),
                         None
                     )
-                    final_df.at[idx_, "primary_desc"] = gobj_pri["desc"] if gobj_pri else ""
+                    final_df.at[i, "primary_desc"] = grp["desc"] if grp else ""
                 else:
-                    final_df.at[idx_, "primary_desc"] = ""
+                    final_df.at[i, "primary_desc"] = ""
 
             if "secondary_desc" in final_df.columns:
-                if final_df.at[idx_, "secondary_code"] != "unassigned":
-                    gobj_sec = next(
+                if assigned_obj["secondary_code"] != "Unassigned":
+                    grp2 = next(
                         (g for g in st.session_state.open_coding_groups
-                         if g["name"] == final_df.at[idx_, "secondary_code"]),
+                         if g["name"] == assigned_obj["secondary_code"]),
                         None
                     )
-                    final_df.at[idx_, "secondary_desc"] = gobj_sec["desc"] if gobj_sec else ""
+                    final_df.at[i, "secondary_desc"] = grp2["desc"] if grp2 else ""
                 else:
-                    final_df.at[idx_, "secondary_desc"] = ""
+                    final_df.at[i, "secondary_desc"] = ""
 
-    # (C) Finally, save everything to disk
+    # STEP 4: Save the updated assignments (and any other needed files)
     try:
-        saved = save_coding_state()
-        return bool(saved)
+        return save_coding_state()
     except Exception as e:
         st.error(f"Error saving coding: {e}")
         return False
 
 def render_open_coding_interface(variable, responses_dict, open_var_options, grouping_columns):
     """
-    High-level function that:
-      - Initializes the system (loads or creates brand-new caches).
-      - Combines dataframes from responses_dict for the selected 'variable'.
-      - Ensures final_df has columns: 'primary_code', 'secondary_code',
-        'primary_desc', 'secondary_desc' (all default to "unassigned"/"").
-      - Shows two pie charts side by side for primary_code & secondary_code.
-      - Renders a data_editor for coding updates.
-      - Lets user do random sampling, etc.
-
-    The essential parts:
-      * Each row is identified by (id, variable).
-      * Primary / Secondary code selections come from st.session_state.open_coding_groups.
-      * We store the group 'desc' in primary_desc or secondary_desc accordingly.
-      * We constantly save to 'assignment_groups.csv' and 'assignment_assignments.csv'.
+    Main function to display and manage the open-coding interface.
+      * A single 'cache/groups.csv' for code groups (name/desc)
+      * A single 'cache/assignments.csv' for coded assignments
+         (id, variable, primary_code, secondary_code)
+      * Everything is easily pushed to Git by any user (no backups needed).
     """
 
     # 0) Initialization & autosave
@@ -938,26 +881,26 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
         cdf = cdf.dropna(subset=[variable])
         cdf = cdf[cdf[variable].astype(str).str.strip() != ""]
 
-        # Ensure required columns exist
         for needed in ["primary_code", "primary_desc", "secondary_code", "secondary_desc"]:
             if needed not in cdf.columns:
                 if "desc" in needed:
                     cdf[needed] = ""
                 else:
-                    cdf[needed] = "unassigned"
+                    cdf[needed] = "Unassigned"
 
         # Merge existing assignments from session_state
         for idx, row in cdf.iterrows():
             row_id = str(row.get("id", "")) or ""
-            key_ = (row_id, variable)
-            assigned_obj = st.session_state.open_coding_assignments.get(
-                key_, {"primary_code": "unassigned", "secondary_code": "unassigned"}
-            )
-            cdf.at[idx, "primary_code"] = assigned_obj.get("primary_code", "unassigned")
-            cdf.at[idx, "secondary_code"] = assigned_obj.get("secondary_code", "unassigned")
+            survid_ = str(row.get("surveyid", "")) or ""
+            key_ = (row_id, survid_, variable)
 
-            # If codes not unassigned, fill desc columns
-            if cdf.at[idx, "primary_code"] != "unassigned":
+            assigned_obj = st.session_state.open_coding_assignments.get(
+                key_, {"primary_code": "Unassigned", "secondary_code": "Unassigned"}
+            )
+            cdf.at[idx, "primary_code"] = assigned_obj.get("primary_code", "Unassigned")
+            cdf.at[idx, "secondary_code"] = assigned_obj.get("secondary_code", "Unassigned")
+
+            if cdf.at[idx, "primary_code"] != "Unassigned":
                 gobj = next(
                     (g for g in st.session_state.open_coding_groups
                      if g["name"] == cdf.at[idx, "primary_code"]),
@@ -965,7 +908,7 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
                 )
                 cdf.at[idx, "primary_desc"] = gobj["desc"] if gobj else ""
 
-            if cdf.at[idx, "secondary_code"] != "unassigned":
+            if cdf.at[idx, "secondary_code"] != "Unassigned":
                 gobj2 = next(
                     (g for g in st.session_state.open_coding_groups
                      if g["name"] == cdf.at[idx, "secondary_code"]),
@@ -1001,13 +944,12 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
                         values="Count",
                         names="Group",
                         hover_data=["Description"],
-                        title="Primary Code",
-                        color_discrete_sequence=px.colors.qualitative.Plotly
+                        title="Primary Code"
                     )
                     fig_p.update_layout(width=400, height=400, margin=dict(t=40, b=0, l=0, r=0))
                     st.plotly_chart(fig_p, use_container_width=False)
                 else:
-                    st.info("No codes assigned for primary yet.")
+                    st.info("No primary codes assigned yet.")
 
         with c2:
             if "secondary_code" in final_df.columns:
@@ -1024,24 +966,22 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
                         values="Count",
                         names="Group",
                         hover_data=["Description"],
-                        title="Secondary Code",
-                        color_discrete_sequence=px.colors.qualitative.Bold
+                        title="Secondary Code"
                     )
                     fig_s.update_layout(width=400, height=400, margin=dict(t=40, b=0, l=0, r=0))
                     st.plotly_chart(fig_s, use_container_width=False)
                 else:
-                    st.info("No codes assigned for secondary yet.")
+                    st.info("No secondary codes assigned yet.")
 
     # 3) Table Editor with optional filtering
     st.markdown("---")
     st.subheader("Edit Coding Assignments")
 
-    # Example: if the user has "abc_open", the base var might be "abc"
     base_var = variable.replace("_open", "")
     desired_cols = [
-        "id", "age", "gender", "region", "jobtitle",
-        base_var,    # potential rank variable
-        variable,    # open-text variable
+        "id", "surveyid", "age", "gender", "region", "jobtitle",
+        base_var,
+        variable,
         "primary_code", "primary_desc",
         "secondary_code", "secondary_desc"
     ]
@@ -1076,7 +1016,7 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
                 ]
 
     # --- Configure columns in the data_editor ---
-    group_names = ["unassigned"] + [g["name"] for g in st.session_state.open_coding_groups]
+    group_names = ["Unassigned"] + [g["name"] for g in st.session_state.open_coding_groups]
     col_config = {}
     for col_ in df_for_editor.columns:
         if col_ == "primary_code":
@@ -1115,7 +1055,7 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
         else:
             st.error("Error saving coding.")
 
-    # 4) Random Samples for convenience review
+    # Random Samples for convenience
     st.markdown("---")
     st.markdown("### 🎲 Random Samples for Review")
 
@@ -1127,7 +1067,7 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
                     val = row[variable]
                     if pd.notna(val) and str(val).strip():
                         out["All"].append({
-                            "id": str(row.get("id", "")) or str(row.get("id", "")),
+                            "id": str(row.get("id", "")) or "",
                             "surveyid": sid,
                             "text": str(val).strip(),
                             "age": row.get("age"),
@@ -1148,7 +1088,6 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
                 newlist.append(obj)
         samples_dict[cat_k] = newlist
 
-    # Let user choose how many random samples
     num_samp = st.slider("Number of samples per group", 1, 20, 5)
     if "sample_seed" not in st.session_state:
         st.session_state["sample_seed"] = 1234
@@ -1179,22 +1118,23 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
 
                 st.write(obj["text"])
 
-                # Let user assign BOTH primary and secondary code
-                dict_key = (obj["id"], variable)
+                # FIX HERE: 3-tuple key instead of 2-tuple
+                dict_key = (obj["id"], obj["surveyid"], variable)
+
                 if dict_key not in st.session_state.open_coding_assignments:
                     st.session_state.open_coding_assignments[dict_key] = {
-                        "primary_code": "unassigned",
-                        "secondary_code": "unassigned"
+                        "primary_code": "Unassigned",
+                        "secondary_code": "Unassigned"
                     }
 
                 assigned_obj_ = st.session_state.open_coding_assignments[dict_key]
-                grp_list = ["unassigned"] + [g["name"] for g in st.session_state.open_coding_groups]
+                grp_list = ["Unassigned"] + [g["name"] for g in st.session_state.open_coding_groups]
 
                 # Primary
                 st.write("**Primary Code**:")
-                p_current = assigned_obj_.get("primary_code", "unassigned")
+                p_current = assigned_obj_.get("primary_code", "Unassigned")
                 if p_current not in grp_list:
-                    p_current = "unassigned"
+                    p_current = "Unassigned"
                 new_p = st.selectbox(
                     f"Assign primary code (Sample {i})",
                     options=grp_list,
@@ -1205,9 +1145,9 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
 
                 # Secondary
                 st.write("**Secondary Code**:")
-                s_current = assigned_obj_.get("secondary_code", "unassigned")
+                s_current = assigned_obj_.get("secondary_code", "Unassigned")
                 if s_current not in grp_list:
-                    s_current = "unassigned"
+                    s_current = "Unassigned"
                 new_s = st.selectbox(
                     f"Assign secondary code (Sample {i})",
                     options=grp_list,
@@ -1224,6 +1164,110 @@ def render_open_coding_interface(variable, responses_dict, open_var_options, gro
             st.rerun()
         else:
             st.error("Error saving coding.")
+
+def render_group_manager():
+    # 1) Always load the CSV to show the real on-disk group info
+    df_groups = pd.DataFrame(load_open_coding_groups('cache/groups.csv'))
+    if df_groups.empty:
+        df_groups = pd.DataFrame(columns=["name", "desc"])  # Add more cols if needed
+
+    st.subheader("Manage Coding Groups")
+
+    # 2) Add or update a group
+    new_group_name = st.text_input("Group Name (new or existing)")
+    new_group_desc = st.text_input("Group Description")
+
+    if st.button("➕ Add / Update Group"):
+        gname = new_group_name.strip()
+        if gname:
+            # Check if that name already exists
+            existing_idx = df_groups.index[df_groups["name"] == gname].tolist()
+            if existing_idx:
+                # Update the existing group's description
+                for idx in existing_idx:
+                    df_groups.at[idx, "desc"] = new_group_desc.strip()
+                st.success(f"Updated group '{gname}'.")
+            else:
+                # Append a new row
+                new_row = pd.DataFrame({"name": [gname], "desc": [new_group_desc.strip()]})
+                df_groups = pd.concat([df_groups, new_row], ignore_index=True)
+                st.success(f"Created new group '{gname}'.")
+
+            # Save to disk
+            df_groups.to_csv('cache/groups.csv', index=False)
+            # Also update session state so the rest of your code sees changes
+            st.session_state.open_coding_groups = df_groups.to_dict('records')
+            st.rerun()
+        else:
+            st.warning("Please enter a valid group name.")
+
+    # 3) Delete a group
+    with st.expander("Delete Groups"):
+        all_group_names = df_groups["name"].tolist()
+        if all_group_names:
+            delete_choice = st.selectbox("❌ Select a group to remove", ["(None)"] + all_group_names)
+            if delete_choice != "(None)":
+                if st.button(f"🗑️ Remove Group '{delete_choice}'"):
+                    # Remove from DataFrame
+                    df_groups = df_groups[df_groups["name"] != delete_choice]
+
+                    # Also unassign references in your coded assignments
+                    for (k_id, k_surveyid, k_var), valdict in list(st.session_state.open_coding_assignments.items()):
+                        if valdict.get("primary_code") == delete_choice:
+                            valdict["primary_code"] = "Unassigned"
+                        if valdict.get("secondary_code") == delete_choice:
+                            valdict["secondary_code"] = "Unassigned"
+
+                    df_groups.to_csv('cache/groups.csv', index=False)
+                    st.session_state.open_coding_groups = df_groups.to_dict('records')
+                    st.success(f"Removed group '{delete_choice}'.")
+                    st.rerun()
+
+    # 4) Optional: Merge or combine groups
+    with st.expander("Combine Groups"):
+        groups_to_merge = st.multiselect(
+            "Select two or more groups to combine",
+            all_group_names
+        )
+        merged_group_name = st.text_input("New Merged Group Name")
+        merged_group_desc = st.text_input("Merged Group Description")
+
+        if st.button("Combine & Save"):
+            if len(groups_to_merge) < 2:
+                st.warning("Please select at least two groups to combine.")
+            elif not merged_group_name.strip():
+                st.warning("Please provide a valid name for the new group.")
+            else:
+                # Update any assignments in session_state
+                for (k_id, k_surveyid, k_var), valdict in list(st.session_state.open_coding_assignments.items()):
+                    if valdict["primary_code"] in groups_to_merge:
+                        valdict["primary_code"] = merged_group_name.strip()
+                    if valdict["secondary_code"] in groups_to_merge:
+                        valdict["secondary_code"] = merged_group_name.strip()
+
+                # Remove old groups from df_groups
+                df_groups = df_groups[~df_groups["name"].isin(groups_to_merge)]
+
+                # Add the merged group
+                df_groups = pd.concat([
+                    df_groups,
+                    pd.DataFrame({
+                        "name": [merged_group_name.strip()],
+                        "desc": [merged_group_desc.strip()]
+                    })
+                ], ignore_index=True)
+
+                # Save back to CSV
+                df_groups.to_csv('cache/groups.csv', index=False)
+                st.session_state.open_coding_groups = df_groups.to_dict('records')
+                st.success(f"Merged {groups_to_merge} into '{merged_group_name.strip()}' successfully.")
+                st.rerun()
+
+    with st.expander("Existing Groups"):
+        if df_groups.empty:
+            st.info("No coding groups found in the CSV.")
+        else:
+            st.dataframe(df_groups, use_container_width=True)
 
 
 ################################################################################
@@ -3054,99 +3098,10 @@ with st.sidebar:
         # Synonym manager
         render_synonym_groups_management()
 
+
+        # Coding group manager
         st.markdown("---")
-        # Group manager
-        st.subheader("Manage Coding Groups")
-
-        new_group_name = st.text_input("Group Name (new or existing)")
-        new_group_desc = st.text_input("Group Description")
-        if st.button("➕ Add / Update Group"):
-            gname = new_group_name.strip()
-            if gname:
-                # Check if group already exists
-                existing = next((g for g in st.session_state.open_coding_groups
-                                 if g['name'] == gname), None)
-                if existing:
-                    existing["desc"] = new_group_desc.strip()
-                    st.success(f"Updated group '{gname}'.")
-                else:
-                    st.session_state.open_coding_groups.append({
-                        "name": gname,
-                        "desc": new_group_desc.strip()
-                    })
-                    st.success(f"Created new group '{gname}'.")
-                save_coding_state()
-            else:
-                st.warning("Please enter a valid group name.")
-
-        all_group_names = [g["name"] for g in st.session_state.open_coding_groups]
-        if all_group_names:
-            delete_choice = st.selectbox("❌ Select a group to remove", ["(None)"] + all_group_names)
-            if delete_choice != "(None)":
-                if st.button(f"🗑️ Remove Group '{delete_choice}'"):
-                    # Remove from group list
-                    st.session_state.open_coding_groups = [
-                        g for g in st.session_state.open_coding_groups
-                        if g["name"] != delete_choice
-                    ]
-                    # Unassign any references in existing coded assignments
-                    for (k_id, k_var), vdict in list(st.session_state.open_coding_assignments.items()):
-                        # vdict is { "primary_code": X, "secondary_code": Y }
-                        if vdict.get("primary_code") == delete_choice:
-                            vdict["primary_code"] = "unassigned"
-                        if vdict.get("secondary_code") == delete_choice:
-                            vdict["secondary_code"] = "unassigned"
-                    save_coding_state()
-                    st.success(f"Removed group '{delete_choice}'")
-                    st.rerun()
-
-        # Combine (merge) groups
-        with st.expander("Combine (Merge) Groups"):
-            groups_to_merge = st.multiselect(
-                "Select two or more groups to combine",
-                all_group_names
-            )
-            merged_group_name = st.text_input("New Merged Group Name")
-            merged_group_desc = st.text_input("Merged Group Description")
-
-            if st.button("Combine & Save"):
-                if len(groups_to_merge) < 2:
-                    st.warning("Please select at least two groups to combine.")
-                elif not merged_group_name.strip():
-                    st.warning("Please provide a valid name for the new group.")
-                else:
-                    for (some_id, some_var), valdict in list(st.session_state.open_coding_assignments.items()):
-                        # If the old group is in primary or secondary, rename it
-                        if valdict["primary_code"] in groups_to_merge:
-                            valdict["primary_code"] = merged_group_name.strip()
-                        if valdict["secondary_code"] in groups_to_merge:
-                            valdict["secondary_code"] = merged_group_name.strip()
-
-                    # Remove old groups
-                    st.session_state.open_coding_groups = [
-                        g for g in st.session_state.open_coding_groups
-                        if g["name"] not in groups_to_merge
-                    ]
-                    # Add the new merged group
-                    st.session_state.open_coding_groups.append({
-                        "name": merged_group_name.strip(),
-                        "desc": merged_group_desc.strip()
-                    })
-
-                    if save_coding_state():
-                        st.success(f"Merged {groups_to_merge} into '{merged_group_name.strip()}' successfully.")
-                        st.rerun()
-                    else:
-                        st.error("Error saving after merging groups.")
-
-        # Expander to show current groups and descriptions
-        with st.expander("View Existing Groups", expanded=False):
-            if st.session_state.open_coding_groups:
-                df_groups = pd.DataFrame(st.session_state.open_coding_groups)
-                st.dataframe(df_groups, use_container_width=True)
-            else:
-                st.info("No coding groups defined yet.")
-
+        render_group_manager()
         st.markdown("---")
 
         # Refresh button
